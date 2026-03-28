@@ -1,0 +1,368 @@
+import argparse
+import json
+import re
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+from nilearn.connectome import ConnectivityMeasure
+from sklearn.covariance import LedoitWolf
+
+
+ATLAS_CONFIG = {
+    "AAL": {
+        "folder_name": "AAL",
+        "suffix": "rois_aal.1D",
+        "expected_rois": 116,
+    },
+    "HarvardOxford": {
+        "folder_name": "HarvardOxford",
+        "suffix": "rois_ho.1D",
+        "expected_rois": 111,
+    },
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build functional connectivity matrices from ABIDE ROI time-series."
+    )
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default="D:/FGDN_Project",
+        help="Path to project root directory.",
+    )
+    parser.add_argument(
+        "--atlas",
+        type=str,
+        choices=["AAL", "HarvardOxford", "all"],
+        default="all",
+        help="Atlas to process.",
+    )
+    parser.add_argument(
+        "--kind",
+        type=str,
+        choices=["tangent", "correlation", "partial correlation", "covariance", "precision"],
+        default="tangent",
+        help="Connectivity type for nilearn ConnectivityMeasure.",
+    )
+    parser.add_argument(
+        "--min-timepoints",
+        type=int,
+        default=20,
+        help="Minimum number of timepoints required to keep a subject.",
+    )
+    parser.add_argument(
+        "--save-timeseries-info",
+        action="store_true",
+        help="If set, saves extra metadata about timeseries shapes.",
+    )
+    return parser.parse_args()
+
+
+def load_phenotypic_csv(project_root: Path) -> pd.DataFrame:
+    phenotypic_path = (
+        project_root
+        / "data"
+        / "raw"
+        / "abide"
+        / "phenotypic"
+        / "Phenotypic_V1_0b_preprocessed1.csv"
+    )
+
+    if not phenotypic_path.exists():
+        raise FileNotFoundError(f"Phenotypic CSV not found: {phenotypic_path}")
+
+    df = pd.read_csv(phenotypic_path)
+
+    required_cols = ["SUB_ID", "DX_GROUP"]
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Phenotypic CSV missing required columns: {missing}")
+
+    df = df.copy()
+    df["SUB_ID"] = df["SUB_ID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(7)
+    df = df.dropna(subset=["SUB_ID", "DX_GROUP"])
+
+    # FGDN/ABIDE convention often uses 1=ASD, 2=HC in DX_GROUP.
+    # We map to binary labels: ASD -> 1, HC -> 0
+    dx_map = {1: 1, 2: 0}
+    df = df[df["DX_GROUP"].isin(dx_map.keys())].copy()
+    df["label"] = df["DX_GROUP"].map(dx_map)
+
+    return df
+
+
+def extract_subject_id(file_path: Path) -> str:
+    """
+    Extract the ABIDE numeric subject ID from filenames like:
+    Pitt_0050004_rois_aal.1D
+    Leuven_1_0050682_rois_aal.1D
+    MaxMun_c_0051328_rois_ho.1D
+    """
+    match = re.search(r"_(\d{7})_rois_", file_path.name)
+    if not match:
+        raise ValueError(f"Could not extract subject ID from filename: {file_path.name}")
+    return match.group(1)
+
+
+def find_roi_files(project_root: Path, atlas_name: str) -> List[Path]:
+    atlas_folder = ATLAS_CONFIG[atlas_name]["folder_name"]
+    suffix = ATLAS_CONFIG[atlas_name]["suffix"]
+
+    roi_root = (
+        project_root
+        / "data"
+        / "raw"
+        / "abide"
+        / "roi_timeseries"
+        / atlas_folder
+    )
+
+    if not roi_root.exists():
+        raise FileNotFoundError(f"ROI folder not found for atlas {atlas_name}: {roi_root}")
+
+    files = sorted(roi_root.rglob(f"*{suffix}"))
+    if not files:
+        raise FileNotFoundError(f"No ROI files found under {roi_root} with suffix {suffix}")
+
+    return files
+
+
+def read_timeseries(file_path: Path, expected_rois: int, min_timepoints: int) -> np.ndarray:
+    ts = np.loadtxt(file_path, dtype=np.float64)
+
+    if ts.ndim == 1:
+        # Rare case: a single timepoint row or malformed shape
+        ts = np.expand_dims(ts, axis=0)
+
+    if ts.ndim != 2:
+        raise ValueError(f"Timeseries must be 2D, got shape {ts.shape} for {file_path}")
+
+    n_timepoints, n_rois = ts.shape
+
+    if n_timepoints < min_timepoints:
+        raise ValueError(
+            f"Too few timepoints ({n_timepoints}) in {file_path}; minimum required is {min_timepoints}"
+        )
+
+    if n_rois != expected_rois:
+        raise ValueError(
+            f"ROI count mismatch in {file_path}: expected {expected_rois}, got {n_rois}"
+        )
+
+    if not np.isfinite(ts).all():
+        raise ValueError(f"Non-finite values found in timeseries: {file_path}")
+
+    return ts
+
+
+def collect_subject_timeseries(
+    project_root: Path,
+    phenotypic_df: pd.DataFrame,
+    atlas_name: str,
+    min_timepoints: int,
+) -> Tuple[List[np.ndarray], np.ndarray, np.ndarray, List[Dict]]:
+    roi_files = find_roi_files(project_root, atlas_name)
+    expected_rois = ATLAS_CONFIG[atlas_name]["expected_rois"]
+
+    subj_to_label = dict(zip(phenotypic_df["SUB_ID"], phenotypic_df["label"]))
+
+    timeseries_list: List[np.ndarray] = []
+    subject_ids: List[str] = []
+    labels: List[int] = []
+    metadata_rows: List[Dict] = []
+
+    skipped_no_match = 0
+    skipped_bad_file = 0
+
+    for file_path in roi_files:
+        try:
+            subject_id = extract_subject_id(file_path)
+        except Exception:
+            skipped_bad_file += 1
+            continue
+
+        if subject_id not in subj_to_label:
+            skipped_no_match += 1
+            continue
+
+        try:
+            ts = read_timeseries(
+                file_path=file_path,
+                expected_rois=expected_rois,
+                min_timepoints=min_timepoints,
+            )
+        except Exception as exc:
+            skipped_bad_file += 1
+            metadata_rows.append(
+                {
+                    "subject_id": subject_id,
+                    "file_path": str(file_path),
+                    "status": "skipped_bad_file",
+                    "reason": str(exc),
+                }
+            )
+            continue
+
+        timeseries_list.append(ts)
+        subject_ids.append(subject_id)
+        labels.append(int(subj_to_label[subject_id]))
+        metadata_rows.append(
+            {
+                "subject_id": subject_id,
+                "file_path": str(file_path),
+                "status": "kept",
+                "n_timepoints": int(ts.shape[0]),
+                "n_rois": int(ts.shape[1]),
+                "label": int(subj_to_label[subject_id]),
+            }
+        )
+
+    if not timeseries_list:
+        raise RuntimeError(f"No valid matched subjects found for atlas {atlas_name}")
+
+    print(f"[{atlas_name}] Total ROI files found      : {len(roi_files)}")
+    print(f"[{atlas_name}] Valid matched subjects    : {len(timeseries_list)}")
+    print(f"[{atlas_name}] Skipped (no phenotype)   : {skipped_no_match}")
+    print(f"[{atlas_name}] Skipped (bad file/shape) : {skipped_bad_file}")
+
+    return (
+        timeseries_list,
+        np.array(subject_ids, dtype=object),
+        np.array(labels, dtype=np.int64),
+        metadata_rows,
+    )
+
+
+def compute_connectivity(
+    timeseries_list: List[np.ndarray],
+    kind: str,
+) -> np.ndarray:
+    estimator = ConnectivityMeasure(
+        kind=kind,
+        cov_estimator=LedoitWolf(store_precision=False),
+        vectorize=False,
+        discard_diagonal=False,
+    )
+
+    connectivity = estimator.fit_transform(timeseries_list)
+    return connectivity.astype(np.float32)
+
+
+def save_outputs(
+    project_root: Path,
+    atlas_name: str,
+    kind: str,
+    subject_ids: np.ndarray,
+    labels: np.ndarray,
+    connectivity: np.ndarray,
+    metadata_rows: List[Dict],
+    save_timeseries_info: bool,
+) -> None:
+    out_dir = (
+        project_root
+        / "data"
+        / "interim"
+        / "connectivity_matrices"
+        / atlas_name
+        / kind
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(out_dir / "subject_ids.npy", subject_ids)
+    np.save(out_dir / "labels.npy", labels)
+    np.save(out_dir / "connectivity.npy", connectivity)
+
+    summary = {
+        "atlas": atlas_name,
+        "kind": kind,
+        "num_subjects": int(len(subject_ids)),
+        "num_rois": int(connectivity.shape[1]),
+        "matrix_shape": list(connectivity.shape),
+        "label_distribution": {
+            "ASD_1": int((labels == 1).sum()),
+            "HC_0": int((labels == 0).sum()),
+        },
+    }
+
+    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    if save_timeseries_info:
+        metadata_df = pd.DataFrame(metadata_rows)
+        metadata_df.to_csv(out_dir / "subject_metadata.csv", index=False)
+
+    print(f"[{atlas_name}] Saved outputs to: {out_dir}")
+    print(f"[{atlas_name}] connectivity.npy shape: {connectivity.shape}")
+
+
+def process_atlas(
+    project_root: Path,
+    phenotypic_df: pd.DataFrame,
+    atlas_name: str,
+    kind: str,
+    min_timepoints: int,
+    save_timeseries_info: bool,
+) -> None:
+    print("=" * 72)
+    print(f"Processing atlas: {atlas_name}")
+    print("=" * 72)
+
+    timeseries_list, subject_ids, labels, metadata_rows = collect_subject_timeseries(
+        project_root=project_root,
+        phenotypic_df=phenotypic_df,
+        atlas_name=atlas_name,
+        min_timepoints=min_timepoints,
+    )
+
+    connectivity = compute_connectivity(
+        timeseries_list=timeseries_list,
+        kind=kind,
+    )
+
+    if connectivity.shape[0] != len(subject_ids):
+        raise RuntimeError("Subject count mismatch between IDs and connectivity matrices")
+
+    save_outputs(
+        project_root=project_root,
+        atlas_name=atlas_name,
+        kind=kind,
+        subject_ids=subject_ids,
+        labels=labels,
+        connectivity=connectivity,
+        metadata_rows=metadata_rows,
+        save_timeseries_info=save_timeseries_info,
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    project_root = Path(args.project_root)
+
+    phenotypic_df = load_phenotypic_csv(project_root)
+
+    if args.atlas == "all":
+        atlas_names = ["AAL", "HarvardOxford"]
+    else:
+        atlas_names = [args.atlas]
+
+    for atlas_name in atlas_names:
+        process_atlas(
+            project_root=project_root,
+            phenotypic_df=phenotypic_df,
+            atlas_name=atlas_name,
+            kind=args.kind,
+            min_timepoints=args.min_timepoints,
+            save_timeseries_info=args.save_timeseries_info,
+        )
+
+    print("=" * 72)
+    print("Finished building connectivity matrices.")
+    print("=" * 72)
+
+
+if __name__ == "__main__":
+    main()
