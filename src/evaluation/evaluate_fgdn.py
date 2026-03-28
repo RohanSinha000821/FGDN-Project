@@ -66,8 +66,8 @@ def build_model_from_checkpoint(sample, checkpoint, device):
 
     model = FGDNModel(
         in_channels=sample.x.size(1),
+        num_nodes=sample.x.size(0),
         hidden_channels=args["hidden_channels"],
-        branch_out_channels=args["branch_out_channels"],
         cheb_k=args["cheb_k"],
         dropout=args["dropout"],
         num_classes=2,
@@ -137,7 +137,6 @@ def main():
     )
 
     model = build_model_from_checkpoint(test_dataset[0], checkpoint, device)
-
     results = evaluate(model, loader, device)
 
     out_dir = (
@@ -160,7 +159,9 @@ def main():
                 "fold": args.fold,
                 "checkpoint_path": str(ckpt_path),
                 "checkpoint_type": args.checkpoint_type,
-                "best_val_auc_from_training": checkpoint.get("best_val_auc", None),
+                "best_monitor_auc_from_training": checkpoint.get("best_monitor_auc", None),
+                "training_epoch_saved": checkpoint.get("epoch", None),
+                "split_info": checkpoint.get("split_info", None),
                 "accuracy": results["accuracy"],
                 "auc": results["auc"],
                 "confusion_matrix": results["confusion_matrix"],
@@ -179,12 +180,13 @@ def main():
     )
 
     print("=" * 72)
-    print(f"Checkpoint      : {ckpt_path}")
-    print(f"Accuracy        : {results['accuracy']:.6f}")
-    print(f"AUC             : {results['auc']:.6f}")
-    print(f"Confusion Matrix: {results['confusion_matrix']}")
-    print(f"Saved JSON      : {out_path}")
-    print(f"Saved preds     : {pred_path}")
+    print(f"Checkpoint                : {ckpt_path}")
+    print(f"Best monitor AUC (train)  : {checkpoint.get('best_monitor_auc', None)}")
+    print(f"Accuracy                  : {results['accuracy']:.6f}")
+    print(f"AUC                       : {results['auc']:.6f}")
+    print(f"Confusion Matrix          : {results['confusion_matrix']}")
+    print(f"Saved JSON                : {out_path}")
+    print(f"Saved preds               : {pred_path}")
     print("=" * 72)
 
 

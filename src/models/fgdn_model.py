@@ -4,33 +4,53 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch_geometric.nn import ChebConv, global_mean_pool
+from torch_geometric.nn import ChebConv
 
 
 class FGDNBranch(nn.Module):
     """
-    One graph-processing branch:
+    One paper-faithful FGDN branch:
     subject node features + one class-specific template graph.
+
+    Pipeline:
+      ChebConv -> PReLU -> Dropout
+      ChebConv -> PReLU -> Dropout
+      Flatten all node features
+      Linear -> scalar branch score
     """
 
     def __init__(
         self,
         in_channels: int,
-        hidden_channels: int,
-        out_channels: int,
+        num_nodes: int,
+        hidden_channels: int = 64,
         K: int = 3,
         dropout: float = 0.1,
     ):
         super().__init__()
+
+        self.num_nodes = num_nodes
+        self.hidden_channels = hidden_channels
+        self.dropout = dropout
+
         self.conv1 = ChebConv(in_channels, hidden_channels, K=K)
         self.prelu1 = nn.PReLU(hidden_channels)
 
-        self.conv2 = ChebConv(hidden_channels, out_channels, K=K)
-        self.prelu2 = nn.PReLU(out_channels)
+        self.conv2 = ChebConv(hidden_channels, hidden_channels, K=K)
+        self.prelu2 = nn.PReLU(hidden_channels)
 
-        self.dropout = dropout
+        self.fc = nn.Linear(num_nodes * hidden_channels, 1)
 
     def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor) -> Tensor:
+        """
+        Args:
+            x: [total_nodes_in_batch, in_channels]
+            edge_index: [2, total_edges_in_batch]
+            batch: [total_nodes_in_batch] graph assignment vector
+
+        Returns:
+            branch_score: [batch_size, 1]
+        """
         x = self.conv1(x, edge_index)
         x = self.prelu1(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -39,56 +59,68 @@ class FGDNBranch(nn.Module):
         x = self.prelu2(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
 
-        # Graph-level embedding
-        x = global_mean_pool(x, batch)
-        return x
+        batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
+
+        # Since every graph in the batch has the same number of nodes,
+        # reshape from [batch_size * num_nodes, hidden_channels]
+        # to [batch_size, num_nodes * hidden_channels].
+        expected_total_nodes = batch_size * self.num_nodes
+        if x.size(0) != expected_total_nodes:
+            raise ValueError(
+                f"FGDNBranch reshape mismatch: got total nodes {x.size(0)}, "
+                f"expected {expected_total_nodes} = batch_size({batch_size}) * num_nodes({self.num_nodes})."
+            )
+
+        x = x.view(batch_size, self.num_nodes * self.hidden_channels)
+        branch_score = self.fc(x)  # [batch_size, 1]
+        return branch_score
 
 
 class FGDNModel(nn.Module):
     """
-    FGDN-style dual-template model.
+    Paper-faithful FGDN dual-template model.
 
-    Each subject graph is evaluated under:
-      - ASD template graph
-      - HC template graph
+    Each subject is processed twice:
+      - under the ASD template graph
+      - under the HC template graph
 
-    Then the two graph-level embeddings are fused for final classification.
+    Each branch outputs one scalar.
+    The final 2D output is:
+      [ASD_branch_score, HC_branch_score]
+
+    We return raw logits so CrossEntropyLoss can be used directly.
     """
 
     def __init__(
         self,
         in_channels: int,
+        num_nodes: int,
         hidden_channels: int = 64,
-        branch_out_channels: int = 64,
         cheb_k: int = 3,
         dropout: float = 0.1,
         num_classes: int = 2,
     ):
         super().__init__()
 
+        if num_classes != 2:
+            raise ValueError("FGDNModel is implemented for binary ASD/HC classification only.")
+
+        self.num_nodes = num_nodes
+
         self.asd_branch = FGDNBranch(
             in_channels=in_channels,
+            num_nodes=num_nodes,
             hidden_channels=hidden_channels,
-            out_channels=branch_out_channels,
             K=cheb_k,
             dropout=dropout,
         )
 
         self.hc_branch = FGDNBranch(
             in_channels=in_channels,
+            num_nodes=num_nodes,
             hidden_channels=hidden_channels,
-            out_channels=branch_out_channels,
             K=cheb_k,
             dropout=dropout,
-        )
-
-        fusion_dim = 2 * branch_out_channels
-
-        self.classifier = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim),
-            nn.PReLU(fusion_dim),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim, num_classes),
         )
 
     def forward(self, data) -> Tuple[Tensor, Tensor]:
@@ -98,27 +130,29 @@ class FGDNModel(nn.Module):
           data.batch
           data.edge_index_asd
           data.edge_index_hc
+
+        Returns:
+          logits: [batch_size, 2]
+          branch_scores: [batch_size, 2]
         """
         x = data.x
         batch = data.batch
 
-        z_asd = self.asd_branch(x, data.edge_index_asd, batch)
-        z_hc = self.hc_branch(x, data.edge_index_hc, batch)
+        asd_score = self.asd_branch(x, data.edge_index_asd, batch)  # [B, 1]
+        hc_score = self.hc_branch(x, data.edge_index_hc, batch)     # [B, 1]
 
-        z = torch.cat([z_asd, z_hc], dim=1)
-        logits = self.classifier(z)
-
-        return logits, z
+        logits = torch.cat([asd_score, hc_score], dim=1)            # [B, 2]
+        return logits, logits
 
 
-def build_fgdn_model(num_node_features: int) -> FGDNModel:
+def build_fgdn_model(num_node_features: int, num_nodes: int) -> FGDNModel:
     """
     Convenience builder using paper-like defaults.
     """
     return FGDNModel(
         in_channels=num_node_features,
+        num_nodes=num_nodes,
         hidden_channels=64,
-        branch_out_channels=64,
         cheb_k=3,
         dropout=0.1,
         num_classes=2,

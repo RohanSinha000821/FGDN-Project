@@ -2,11 +2,13 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import StratifiedShuffleSplit
 from torch_geometric.loader import DataLoader
 
 from src.models.fgdn_model import FGDNModel
@@ -18,15 +20,30 @@ def parse_args():
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
     parser.add_argument("--fold", type=int, required=True)
+
     parser.add_argument("--hidden-channels", type=int, default=64)
-    parser.add_argument("--branch-out-channels", type=int, default=64)
     parser.add_argument("--cheb-k", type=int, default=3)
     parser.add_argument("--dropout", type=float, default=0.1)
+
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--patience", type=int, default=20)
+
+    parser.add_argument(
+        "--monitor-ratio",
+        type=float,
+        default=0.10,
+        help="Fraction of the training fold to reserve as internal monitoring/validation set.",
+    )
+    parser.add_argument(
+        "--monitor-seed",
+        type=int,
+        default=42,
+        help="Random seed for the internal train/monitor split.",
+    )
+
     parser.add_argument("--device", type=str, default="cuda")
     return parser.parse_args()
 
@@ -62,25 +79,58 @@ def load_fold_datasets(project_root: Path, atlas: str, num_folds: int, fold: int
     return train_dataset, test_dataset, summary
 
 
-def make_loaders(train_dataset, test_dataset, batch_size: int):
+def split_train_monitor(
+    train_dataset,
+    monitor_ratio: float,
+    seed: int,
+) -> Tuple[List, List]:
+    if not 0.0 < monitor_ratio < 1.0:
+        raise ValueError(f"monitor_ratio must be in (0, 1), got {monitor_ratio}")
+
+    labels = np.array([int(data.y.item()) for data in train_dataset], dtype=np.int64)
+    indices = np.arange(len(train_dataset))
+
+    if len(np.unique(labels)) < 2:
+        raise ValueError("Training fold contains fewer than 2 classes; cannot stratify.")
+
+    sss = StratifiedShuffleSplit(
+        n_splits=1,
+        test_size=monitor_ratio,
+        random_state=seed,
+    )
+
+    train_sub_idx, monitor_idx = next(sss.split(indices, labels))
+
+    inner_train_dataset = [train_dataset[i] for i in train_sub_idx]
+    monitor_dataset = [train_dataset[i] for i in monitor_idx]
+
+    return inner_train_dataset, monitor_dataset
+
+
+def make_loaders(train_dataset, monitor_dataset, test_dataset, batch_size: int):
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
+    )
+    monitor_loader = DataLoader(
+        monitor_dataset,
+        batch_size=batch_size,
+        shuffle=False,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
     )
-    return train_loader, test_loader
+    return train_loader, monitor_loader, test_loader
 
 
 def build_model(sample, args, device):
     model = FGDNModel(
         in_channels=sample.x.size(1),
+        num_nodes=sample.x.size(0),
         hidden_channels=args.hidden_channels,
-        branch_out_channels=args.branch_out_channels,
         cheb_k=args.cheb_k,
         dropout=args.dropout,
         num_classes=2,
@@ -181,6 +231,14 @@ def save_history_csv(history: List[Dict], csv_path: Path):
         writer.writerows(history)
 
 
+def label_counts(dataset) -> Dict[str, int]:
+    labels = np.array([int(d.y.item()) for d in dataset], dtype=np.int64)
+    return {
+        "ASD_1": int((labels == 1).sum()),
+        "HC_0": int((labels == 0).sum()),
+    }
+
+
 def main():
     args = parse_args()
     project_root = Path(args.project_root)
@@ -194,18 +252,36 @@ def main():
     print(f"Using device: {device}")
     print("=" * 72)
 
-    train_dataset, test_dataset, dataset_summary = load_fold_datasets(
+    outer_train_dataset, test_dataset, dataset_summary = load_fold_datasets(
         project_root=project_root,
         atlas=args.atlas,
         num_folds=args.num_folds,
         fold=args.fold,
     )
 
-    if len(train_dataset) == 0 or len(test_dataset) == 0:
-        raise RuntimeError("Empty train or test dataset.")
+    if len(outer_train_dataset) == 0 or len(test_dataset) == 0:
+        raise RuntimeError("Empty outer-train or test dataset.")
 
-    train_loader, test_loader = make_loaders(
+    train_dataset, monitor_dataset = split_train_monitor(
+        train_dataset=outer_train_dataset,
+        monitor_ratio=args.monitor_ratio,
+        seed=args.monitor_seed,
+    )
+
+    if len(train_dataset) == 0 or len(monitor_dataset) == 0:
+        raise RuntimeError("Empty inner-train or monitor dataset after split.")
+
+    print(f"Outer-train size : {len(outer_train_dataset)}")
+    print(f"Inner-train size : {len(train_dataset)}")
+    print(f"Monitor size     : {len(monitor_dataset)}")
+    print(f"Test size        : {len(test_dataset)}")
+    print(f"Inner-train labels: {label_counts(train_dataset)}")
+    print(f"Monitor labels    : {label_counts(monitor_dataset)}")
+    print(f"Test labels       : {label_counts(test_dataset)}")
+
+    train_loader, monitor_loader, test_loader = make_loaders(
         train_dataset=train_dataset,
+        monitor_dataset=monitor_dataset,
         test_dataset=test_dataset,
         batch_size=args.batch_size,
     )
@@ -245,9 +321,21 @@ def main():
     )
 
     history = []
-    best_auc = -1.0
+    best_monitor_auc = -1.0
     best_epoch = -1
     patience_counter = 0
+
+    split_info = {
+        "monitor_ratio": args.monitor_ratio,
+        "monitor_seed": args.monitor_seed,
+        "outer_train_size": len(outer_train_dataset),
+        "inner_train_size": len(train_dataset),
+        "monitor_size": len(monitor_dataset),
+        "test_size": len(test_dataset),
+        "inner_train_label_distribution": label_counts(train_dataset),
+        "monitor_label_distribution": label_counts(monitor_dataset),
+        "test_label_distribution": label_counts(test_dataset),
+    }
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = run_one_epoch(
@@ -258,9 +346,9 @@ def main():
             device=device,
         )
 
-        val_metrics = evaluate(
+        monitor_metrics = evaluate(
             model=model,
-            loader=test_loader,
+            loader=monitor_loader,
             criterion=criterion,
             device=device,
         )
@@ -270,21 +358,21 @@ def main():
             "train_loss": train_metrics["loss"],
             "train_acc": train_metrics["acc"],
             "train_auc": train_metrics["auc"],
-            "val_loss": val_metrics["loss"],
-            "val_acc": val_metrics["acc"],
-            "val_auc": val_metrics["auc"],
+            "monitor_loss": monitor_metrics["loss"],
+            "monitor_acc": monitor_metrics["acc"],
+            "monitor_auc": monitor_metrics["auc"],
         }
         history.append(row)
 
         print(
             f"Epoch {epoch:03d} | "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['acc']:.4f} train_auc={train_metrics['auc']:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['acc']:.4f} val_auc={val_metrics['auc']:.4f}"
+            f"monitor_loss={monitor_metrics['loss']:.4f} monitor_acc={monitor_metrics['acc']:.4f} monitor_auc={monitor_metrics['auc']:.4f}"
         )
 
-        current_auc = val_metrics["auc"]
-        if current_auc > best_auc:
-            best_auc = current_auc
+        current_auc = monitor_metrics["auc"]
+        if current_auc > best_monitor_auc:
+            best_monitor_auc = current_auc
             best_epoch = epoch
             patience_counter = 0
 
@@ -293,9 +381,10 @@ def main():
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_auc": best_auc,
+                    "best_monitor_auc": best_monitor_auc,
                     "args": vars(args),
                     "dataset_summary": dataset_summary,
+                    "split_info": split_info,
                 },
                 best_ckpt_path,
             )
@@ -307,9 +396,10 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "best_val_auc": best_auc,
+                "best_monitor_auc": best_monitor_auc,
                 "args": vars(args),
                 "dataset_summary": dataset_summary,
+                "split_info": split_info,
             },
             last_ckpt_path,
         )
@@ -320,14 +410,33 @@ def main():
             print(f"Early stopping triggered at epoch {epoch}.")
             break
 
+    # Optional final test evaluation here is only for visibility/logging.
+    # It is not used for model selection.
+    best_checkpoint = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+    model.load_state_dict(best_checkpoint["model_state_dict"])
+
+    final_test_metrics = evaluate(
+        model=model,
+        loader=test_loader,
+        criterion=criterion,
+        device=device,
+    )
+
     print("=" * 72)
     print("Training finished")
     print("=" * 72)
-    print(f"Best val AUC    : {best_auc:.6f}")
-    print(f"Best epoch      : {best_epoch}")
-    print(f"Best checkpoint : {best_ckpt_path}")
-    print(f"Last checkpoint : {last_ckpt_path}")
-    print(f"History CSV     : {history_csv_path}")
+    print(f"Best monitor AUC : {best_monitor_auc:.6f}")
+    print(f"Best epoch       : {best_epoch}")
+    print(f"Best checkpoint  : {best_ckpt_path}")
+    print(f"Last checkpoint  : {last_ckpt_path}")
+    print(f"History CSV      : {history_csv_path}")
+    print(
+        f"Best-ckpt test   : "
+        f"loss={final_test_metrics['loss']:.4f} "
+        f"acc={final_test_metrics['acc']:.4f} "
+        f"auc={final_test_metrics['auc']:.4f}"
+    )
+    print("=" * 72)
 
 
 if __name__ == "__main__":

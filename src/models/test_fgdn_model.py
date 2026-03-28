@@ -16,7 +16,10 @@ def main():
     # Simulate a batched graph with batch vector of zeros
     sample.batch = torch.zeros(sample.x.size(0), dtype=torch.long)
 
-    model = build_fgdn_model(num_node_features=sample.x.size(1))
+    model = build_fgdn_model(
+    num_node_features=sample.x.size(1),
+    num_nodes=sample.x.size(0),
+    )
     model.eval()
 
     with torch.no_grad():
