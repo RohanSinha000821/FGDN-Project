@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+venv/
+.venv/
+.env/
+
+# IDE / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw and intermediate data
+data/raw/
+data/interim/
+
+# Generated outputs
+data/processed/logs/
+data/processed/pyg_datasets/
+outputs/checkpoints/
+outputs/figures/
+outputs/tables/
+
+# Large saved arrays / models
+*.npy
+*.npz
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.h5
+*.mat
+
+# Archives
+*.zip
+*.tar
+*.gz
+*.7z
