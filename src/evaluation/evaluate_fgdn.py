@@ -1,10 +1,12 @@
 import argparse
+import copy
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
+from sklearn.neighbors import NearestNeighbors
 from torch_geometric.loader import DataLoader
 
 from src.models.fgdn_model import FGDNModel
@@ -22,7 +24,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_dataset(project_root: Path, atlas: str, num_folds: int, fold: int):
+def load_fold_datasets(project_root: Path, atlas: str, num_folds: int, fold: int):
     fold_dir = (
         project_root
         / "data"
@@ -32,12 +34,19 @@ def load_dataset(project_root: Path, atlas: str, num_folds: int, fold: int):
         / f"{num_folds}_fold"
         / f"fold_{fold}"
     )
+
+    outer_train_dataset = torch.load(
+        fold_dir / "train_dataset.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
     test_dataset = torch.load(
         fold_dir / "test_dataset.pt",
         map_location="cpu",
         weights_only=False,
     )
-    return test_dataset
+
+    return outer_train_dataset, test_dataset
 
 
 def load_checkpoint(project_root: Path, atlas: str, num_folds: int, fold: int, checkpoint_type: str):
@@ -59,6 +68,76 @@ def load_checkpoint(project_root: Path, atlas: str, num_folds: int, fold: int, c
 
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     return checkpoint, ckpt_path
+
+
+def build_knn_adjacency(mean_fc: np.ndarray, k: int) -> np.ndarray:
+    num_rois = mean_fc.shape[0]
+    effective_k = min(k, num_rois - 1)
+
+    nbrs = NearestNeighbors(n_neighbors=effective_k + 1, metric="euclidean")
+    nbrs.fit(mean_fc)
+    _, indices = nbrs.kneighbors(mean_fc)
+
+    adjacency = np.zeros((num_rois, num_rois), dtype=np.int64)
+
+    for i in range(num_rois):
+        for j in indices[i]:
+            if i == j:
+                continue
+            adjacency[i, j] = 1
+            adjacency[j, i] = 1
+
+    np.fill_diagonal(adjacency, 0)
+    return adjacency
+
+
+def adjacency_to_edge_index(adjacency: np.ndarray) -> np.ndarray:
+    rows, cols = np.where(adjacency > 0)
+    return np.vstack([rows, cols]).astype(np.int64)
+
+
+def rebuild_templates_from_checkpoint_split(outer_train_dataset, checkpoint):
+    split_info = checkpoint.get("split_info", None)
+    if split_info is None:
+        raise ValueError("Checkpoint missing split_info; cannot reconstruct strict templates.")
+
+    inner_train_indices = np.array(split_info["inner_train_indices_outer"], dtype=np.int64)
+    template_k = int(split_info["template_k"])
+
+    inner_train_dataset = [outer_train_dataset[int(i)] for i in inner_train_indices]
+
+    xs = np.stack([data.x.detach().cpu().numpy() for data in inner_train_dataset], axis=0)
+    ys = np.array([int(data.y.item()) for data in inner_train_dataset], dtype=np.int64)
+
+    asd_x = xs[ys == 1]
+    hc_x = xs[ys == 0]
+
+    if len(asd_x) == 0 or len(hc_x) == 0:
+        raise ValueError("Reconstructed inner-train split has empty class.")
+
+    asd_mean_fc = asd_x.mean(axis=0)
+    hc_mean_fc = hc_x.mean(axis=0)
+
+    asd_adj = build_knn_adjacency(asd_mean_fc, k=template_k)
+    hc_adj = build_knn_adjacency(hc_mean_fc, k=template_k)
+
+    asd_edge_index = adjacency_to_edge_index(asd_adj)
+    hc_edge_index = adjacency_to_edge_index(hc_adj)
+
+    return asd_edge_index, hc_edge_index
+
+
+def apply_templates_to_dataset(dataset, asd_edge_index_np: np.ndarray, hc_edge_index_np: np.ndarray):
+    asd_edge_index = torch.from_numpy(asd_edge_index_np).long()
+    hc_edge_index = torch.from_numpy(hc_edge_index_np).long()
+
+    new_dataset = []
+    for data in dataset:
+        item = copy.copy(data)
+        item.edge_index_asd = asd_edge_index.clone()
+        item.edge_index_hc = hc_edge_index.clone()
+        new_dataset.append(item)
+    return new_dataset
 
 
 def build_model_from_checkpoint(sample, checkpoint, device):
@@ -120,13 +199,12 @@ def main():
         args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     )
 
-    test_dataset = load_dataset(
+    outer_train_dataset, raw_test_dataset = load_fold_datasets(
         project_root=project_root,
         atlas=args.atlas,
         num_folds=args.num_folds,
         fold=args.fold,
     )
-    loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
     checkpoint, ckpt_path = load_checkpoint(
         project_root=project_root,
@@ -136,6 +214,16 @@ def main():
         checkpoint_type=args.checkpoint_type,
     )
 
+    asd_edge_index_np, hc_edge_index_np = rebuild_templates_from_checkpoint_split(
+        outer_train_dataset=outer_train_dataset,
+        checkpoint=checkpoint,
+    )
+
+    test_dataset = apply_templates_to_dataset(
+        raw_test_dataset, asd_edge_index_np, hc_edge_index_np
+    )
+
+    loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
     model = build_model_from_checkpoint(test_dataset[0], checkpoint, device)
     results = evaluate(model, loader, device)
 
@@ -182,6 +270,8 @@ def main():
     print("=" * 72)
     print(f"Checkpoint                : {ckpt_path}")
     print(f"Best monitor AUC (train)  : {checkpoint.get('best_monitor_auc', None)}")
+    print(f"ASD template edges        : {asd_edge_index_np.shape[1]}")
+    print(f"HC template edges         : {hc_edge_index_np.shape[1]}")
     print(f"Accuracy                  : {results['accuracy']:.6f}")
     print(f"AUC                       : {results['auc']:.6f}")
     print(f"Confusion Matrix          : {results['confusion_matrix']}")
