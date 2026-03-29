@@ -5,12 +5,18 @@ from typing import Dict, List
 
 import numpy as np
 import torch
+from nilearn.connectome import ConnectivityMeasure
+from sklearn.covariance import LedoitWolf
 from torch_geometric.data import Data
+
+
+ATLAS_NAMES = ["AAL", "HarvardOxford"]
+SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance", "precision"]
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build PyTorch Geometric datasets for FGDN."
+        description="Build PyTorch Geometric datasets for FGDN without tangent leakage."
     )
     parser.add_argument(
         "--project-root",
@@ -21,7 +27,7 @@ def parse_args():
     parser.add_argument(
         "--atlas",
         type=str,
-        choices=["AAL", "HarvardOxford", "all"],
+        choices=ATLAS_NAMES + ["all"],
         default="all",
         help="Atlas to process",
     )
@@ -32,17 +38,43 @@ def parse_args():
         default=[5, 10],
         help="Fold settings to process, e.g. --folds 5 10",
     )
+    parser.add_argument(
+        "--kind",
+        type=str,
+        choices=SUPPORTED_KINDS,
+        default="tangent",
+        help="Connectivity feature kind",
+    )
     return parser.parse_args()
 
 
-def load_connectivity_bundle(project_root: Path, atlas_name: str):
+def load_subject_bundle(project_root: Path, atlas_name: str):
+    base_dir = (
+        project_root
+        / "data"
+        / "interim"
+        / "subject_timeseries"
+        / atlas_name
+    )
+
+    timeseries = np.load(base_dir / "timeseries.npy", allow_pickle=True)
+    labels = np.load(base_dir / "labels.npy", allow_pickle=True).astype(np.int64)
+    subject_ids = np.load(base_dir / "subject_ids.npy", allow_pickle=True)
+
+    if not (len(timeseries) == len(labels) == len(subject_ids)):
+        raise ValueError(f"Mismatch in subject bundle for atlas {atlas_name}")
+
+    return timeseries, labels, subject_ids
+
+
+def load_precomputed_connectivity(project_root: Path, atlas_name: str, kind: str):
     base_dir = (
         project_root
         / "data"
         / "interim"
         / "connectivity_matrices"
         / atlas_name
-        / "tangent"
+        / kind
     )
 
     connectivity = np.load(base_dir / "connectivity.npy").astype(np.float32)
@@ -50,7 +82,7 @@ def load_connectivity_bundle(project_root: Path, atlas_name: str):
     subject_ids = np.load(base_dir / "subject_ids.npy", allow_pickle=True)
 
     if not (len(connectivity) == len(labels) == len(subject_ids)):
-        raise ValueError(f"Mismatch in connectivity bundle for atlas {atlas_name}")
+        raise ValueError(f"Mismatch in connectivity bundle for atlas {atlas_name}, kind={kind}")
 
     return connectivity, labels, subject_ids
 
@@ -70,13 +102,14 @@ def load_split_indices(project_root: Path, atlas_name: str, n_folds: int, fold_i
     return train_idx.astype(np.int64), test_idx.astype(np.int64)
 
 
-def load_graph_templates(project_root: Path, atlas_name: str, n_folds: int, fold_idx: int):
+def load_graph_templates(project_root: Path, atlas_name: str, kind: str, n_folds: int, fold_idx: int):
     template_dir = (
         project_root
         / "data"
         / "interim"
         / "graph_templates"
         / atlas_name
+        / kind
         / f"{n_folds}_fold"
         / f"fold_{fold_idx}"
     )
@@ -87,6 +120,65 @@ def load_graph_templates(project_root: Path, atlas_name: str, n_folds: int, fold
     return asd_edge_index, hc_edge_index
 
 
+def compute_fold_connectivity(
+    project_root: Path,
+    atlas_name: str,
+    kind: str,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+):
+    """
+    For tangent:
+      fit on outer-train only, then transform outer-test.
+    For non-tangent kinds:
+      subset precomputed per-subject matrices.
+    """
+    if kind == "tangent":
+        timeseries, labels, subject_ids = load_subject_bundle(project_root, atlas_name)
+
+        train_ts = [np.asarray(timeseries[int(i)], dtype=np.float64) for i in train_idx]
+        test_ts = [np.asarray(timeseries[int(i)], dtype=np.float64) for i in test_idx]
+
+        estimator = ConnectivityMeasure(
+            kind="tangent",
+            cov_estimator=LedoitWolf(store_precision=False),
+            vectorize=False,
+            discard_diagonal=False,
+        )
+
+        train_conn = estimator.fit_transform(train_ts).astype(np.float32)
+        test_conn = estimator.transform(test_ts).astype(np.float32)
+
+        fit_scope = "outer_train_only_tangent_fit"
+
+    else:
+        connectivity, labels, subject_ids = load_precomputed_connectivity(
+            project_root=project_root,
+            atlas_name=atlas_name,
+            kind=kind,
+        )
+
+        train_conn = connectivity[train_idx].astype(np.float32)
+        test_conn = connectivity[test_idx].astype(np.float32)
+
+        fit_scope = "precomputed_per_subject_connectivity"
+
+    train_labels = labels[train_idx]
+    test_labels = labels[test_idx]
+    train_subject_ids = subject_ids[train_idx]
+    test_subject_ids = subject_ids[test_idx]
+
+    return {
+        "train_conn": train_conn,
+        "test_conn": test_conn,
+        "train_labels": train_labels,
+        "test_labels": test_labels,
+        "train_subject_ids": train_subject_ids,
+        "test_subject_ids": test_subject_ids,
+        "fit_scope": fit_scope,
+    }
+
+
 def make_data_object(
     x_np: np.ndarray,
     y_int: int,
@@ -94,6 +186,7 @@ def make_data_object(
     global_index: int,
     split_name: str,
     atlas_name: str,
+    kind: str,
     n_folds: int,
     fold_idx: int,
     asd_edge_index_np: np.ndarray,
@@ -104,15 +197,14 @@ def make_data_object(
 
     data = Data(x=x, y=y)
 
-    # FGDN uses the same subject node features under two graph templates.
     data.edge_index_asd = torch.from_numpy(asd_edge_index_np).long()
     data.edge_index_hc = torch.from_numpy(hc_edge_index_np).long()
 
-    # Helpful metadata
     data.subject_id = str(subject_id)
     data.sample_index = int(global_index)
     data.split = split_name
     data.atlas = atlas_name
+    data.kind = kind
     data.num_folds = int(n_folds)
     data.fold = int(fold_idx)
     data.num_nodes = int(x.shape[0])
@@ -122,29 +214,34 @@ def make_data_object(
 
 
 def build_fold_dataset(
-    connectivity: np.ndarray,
-    labels: np.ndarray,
-    subject_ids: np.ndarray,
+    train_conn: np.ndarray,
+    test_conn: np.ndarray,
+    train_labels: np.ndarray,
+    test_labels: np.ndarray,
+    train_subject_ids: np.ndarray,
+    test_subject_ids: np.ndarray,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
     asd_edge_index_np: np.ndarray,
     hc_edge_index_np: np.ndarray,
     atlas_name: str,
+    kind: str,
     n_folds: int,
     fold_idx: int,
 ):
     train_list: List[Data] = []
     test_list: List[Data] = []
 
-    for idx in train_idx:
+    for local_i, global_idx in enumerate(train_idx):
         train_list.append(
             make_data_object(
-                x_np=connectivity[idx],
-                y_int=int(labels[idx]),
-                subject_id=subject_ids[idx],
-                global_index=int(idx),
+                x_np=train_conn[local_i],
+                y_int=int(train_labels[local_i]),
+                subject_id=train_subject_ids[local_i],
+                global_index=int(global_idx),
                 split_name="train",
                 atlas_name=atlas_name,
+                kind=kind,
                 n_folds=n_folds,
                 fold_idx=fold_idx,
                 asd_edge_index_np=asd_edge_index_np,
@@ -152,15 +249,16 @@ def build_fold_dataset(
             )
         )
 
-    for idx in test_idx:
+    for local_i, global_idx in enumerate(test_idx):
         test_list.append(
             make_data_object(
-                x_np=connectivity[idx],
-                y_int=int(labels[idx]),
-                subject_id=subject_ids[idx],
-                global_index=int(idx),
+                x_np=test_conn[local_i],
+                y_int=int(test_labels[local_i]),
+                subject_id=test_subject_ids[local_i],
+                global_index=int(global_idx),
                 split_name="test",
                 atlas_name=atlas_name,
+                kind=kind,
                 n_folds=n_folds,
                 fold_idx=fold_idx,
                 asd_edge_index_np=asd_edge_index_np,
@@ -176,6 +274,8 @@ def save_fold_dataset(
     train_list: List[Data],
     test_list: List[Data],
     atlas_name: str,
+    kind: str,
+    connectivity_fit_scope: str,
     n_folds: int,
     fold_idx: int,
 ):
@@ -192,6 +292,8 @@ def save_fold_dataset(
 
     summary: Dict = {
         "atlas": atlas_name,
+        "kind": kind,
+        "connectivity_fit_scope": connectivity_fit_scope,
         "num_folds": int(n_folds),
         "fold": int(fold_idx),
         "num_train_samples": int(len(train_list)),
@@ -216,22 +318,37 @@ def save_fold_dataset(
         json.dump(summary, f, indent=2)
 
 
-def process_fold(project_root: Path, atlas_name: str, n_folds: int, fold_idx: int):
-    connectivity, labels, subject_ids = load_connectivity_bundle(project_root, atlas_name)
+def process_fold(project_root: Path, atlas_name: str, kind: str, n_folds: int, fold_idx: int):
     train_idx, test_idx = load_split_indices(project_root, atlas_name, n_folds, fold_idx)
     asd_edge_index_np, hc_edge_index_np = load_graph_templates(
-        project_root, atlas_name, n_folds, fold_idx
+        project_root=project_root,
+        atlas_name=atlas_name,
+        kind=kind,
+        n_folds=n_folds,
+        fold_idx=fold_idx,
+    )
+
+    fold_bundle = compute_fold_connectivity(
+        project_root=project_root,
+        atlas_name=atlas_name,
+        kind=kind,
+        train_idx=train_idx,
+        test_idx=test_idx,
     )
 
     train_list, test_list = build_fold_dataset(
-        connectivity=connectivity,
-        labels=labels,
-        subject_ids=subject_ids,
+        train_conn=fold_bundle["train_conn"],
+        test_conn=fold_bundle["test_conn"],
+        train_labels=fold_bundle["train_labels"],
+        test_labels=fold_bundle["test_labels"],
+        train_subject_ids=fold_bundle["train_subject_ids"],
+        test_subject_ids=fold_bundle["test_subject_ids"],
         train_idx=train_idx,
         test_idx=test_idx,
         asd_edge_index_np=asd_edge_index_np,
         hc_edge_index_np=hc_edge_index_np,
         atlas_name=atlas_name,
+        kind=kind,
         n_folds=n_folds,
         fold_idx=fold_idx,
     )
@@ -242,6 +359,7 @@ def process_fold(project_root: Path, atlas_name: str, n_folds: int, fold_idx: in
         / "processed"
         / "pyg_datasets"
         / atlas_name
+        / kind
         / f"{n_folds}_fold"
         / f"fold_{fold_idx}"
     )
@@ -251,20 +369,22 @@ def process_fold(project_root: Path, atlas_name: str, n_folds: int, fold_idx: in
         train_list=train_list,
         test_list=test_list,
         atlas_name=atlas_name,
+        kind=kind,
+        connectivity_fit_scope=fold_bundle["fit_scope"],
         n_folds=n_folds,
         fold_idx=fold_idx,
     )
 
     print(
-        f"[{atlas_name}] {n_folds}-fold fold {fold_idx}: "
+        f"[{atlas_name}] kind={kind} {n_folds}-fold fold {fold_idx}: "
         f"train={len(train_list)}, test={len(test_list)}, "
         f"nodes={train_list[0].x.shape[0]}, features={train_list[0].x.shape[1]}"
     )
 
 
-def process_atlas(project_root: Path, atlas_name: str, folds_list):
+def process_atlas(project_root: Path, atlas_name: str, kind: str, folds_list):
     print("=" * 72)
-    print(f"Building PyG datasets for atlas: {atlas_name}")
+    print(f"Building PyG datasets for atlas={atlas_name}, kind={kind}")
     print("=" * 72)
 
     for n_folds in folds_list:
@@ -272,26 +392,25 @@ def process_atlas(project_root: Path, atlas_name: str, folds_list):
             process_fold(
                 project_root=project_root,
                 atlas_name=atlas_name,
+                kind=kind,
                 n_folds=n_folds,
                 fold_idx=fold_idx,
             )
 
-    print(f"[{atlas_name}] Finished all requested folds.")
+    print(f"[{atlas_name}] Finished all requested folds for kind={kind}.")
 
 
 def main():
     args = parse_args()
     project_root = Path(args.project_root)
 
-    if args.atlas == "all":
-        atlases = ["AAL", "HarvardOxford"]
-    else:
-        atlases = [args.atlas]
+    atlases = ATLAS_NAMES if args.atlas == "all" else [args.atlas]
 
     for atlas_name in atlases:
         process_atlas(
             project_root=project_root,
             atlas_name=atlas_name,
+            kind=args.kind,
             folds_list=args.folds,
         )
 

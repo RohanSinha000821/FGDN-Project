@@ -9,7 +9,7 @@ from torch_geometric.nn import ChebConv
 
 class FGDNBranch(nn.Module):
     """
-    One paper-faithful FGDN branch:
+    One FGDN branch:
     subject node features + one class-specific template graph.
 
     Pipeline:
@@ -42,15 +42,6 @@ class FGDNBranch(nn.Module):
         self.fc = nn.Linear(num_nodes * hidden_channels, 1)
 
     def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor) -> Tensor:
-        """
-        Args:
-            x: [total_nodes_in_batch, in_channels]
-            edge_index: [2, total_edges_in_batch]
-            batch: [total_nodes_in_batch] graph assignment vector
-
-        Returns:
-            branch_score: [batch_size, 1]
-        """
         x = self.conv1(x, edge_index)
         x = self.prelu1(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
@@ -60,35 +51,34 @@ class FGDNBranch(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
-
-        # Since every graph in the batch has the same number of nodes,
-        # reshape from [batch_size * num_nodes, hidden_channels]
-        # to [batch_size, num_nodes * hidden_channels].
         expected_total_nodes = batch_size * self.num_nodes
+
         if x.size(0) != expected_total_nodes:
             raise ValueError(
                 f"FGDNBranch reshape mismatch: got total nodes {x.size(0)}, "
-                f"expected {expected_total_nodes} = batch_size({batch_size}) * num_nodes({self.num_nodes})."
+                f"expected {expected_total_nodes} = "
+                f"batch_size({batch_size}) * num_nodes({self.num_nodes})."
             )
 
         x = x.view(batch_size, self.num_nodes * self.hidden_channels)
-        branch_score = self.fc(x)  # [batch_size, 1]
+        branch_score = self.fc(x)
         return branch_score
 
 
 class FGDNModel(nn.Module):
     """
-    Paper-faithful FGDN dual-template model.
+    Dual-template FGDN model.
 
-    Each subject is processed twice:
-      - under the ASD template graph
-      - under the HC template graph
+    Important label convention in this project:
+      HC = 0
+      ASD = 1
 
-    Each branch outputs one scalar.
-    The final 2D output is:
+    Therefore, for CrossEntropyLoss, logits must be returned as:
+      [HC_logit, ASD_logit]
+
+    We also return branch_scores separately in:
       [ASD_branch_score, HC_branch_score]
-
-    We return raw logits so CrossEntropyLoss can be used directly.
+    so the two template-specific branch outputs remain interpretable.
     """
 
     def __init__(
@@ -124,31 +114,22 @@ class FGDNModel(nn.Module):
         )
 
     def forward(self, data) -> Tuple[Tensor, Tensor]:
-        """
-        Expected data fields:
-          data.x
-          data.batch
-          data.edge_index_asd
-          data.edge_index_hc
-
-        Returns:
-          logits: [batch_size, 2]
-          branch_scores: [batch_size, 2]
-        """
         x = data.x
         batch = data.batch
 
         asd_score = self.asd_branch(x, data.edge_index_asd, batch)  # [B, 1]
         hc_score = self.hc_branch(x, data.edge_index_hc, batch)     # [B, 1]
 
-        logits = torch.cat([asd_score, hc_score], dim=1)            # [B, 2]
-        return logits, logits
+        # CrossEntropyLoss expects index 0 -> class 0 (HC), index 1 -> class 1 (ASD)
+        logits = torch.cat([hc_score, asd_score], dim=1)            # [B, 2]
+
+        # Keep template-branch outputs explicitly available for interpretation/debugging
+        branch_scores = torch.cat([asd_score, hc_score], dim=1)     # [B, 2]
+
+        return logits, branch_scores
 
 
 def build_fgdn_model(num_node_features: int, num_nodes: int) -> FGDNModel:
-    """
-    Convenience builder using paper-like defaults.
-    """
     return FGDNModel(
         in_channels=num_node_features,
         num_nodes=num_nodes,

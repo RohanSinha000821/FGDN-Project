@@ -1,12 +1,24 @@
 {
   "atlas": "AAL",
+  "kind": "tangent",
   "num_folds": 10,
   "fold": 9,
   "checkpoint_path": "D:\\FGDN_Project\\outputs\\checkpoints\\fgdn\\AAL\\10_fold\\fold_9\\best_fgdn.pt",
   "checkpoint_type": "best",
-  "best_monitor_auc_from_training": 0.84,
-  "training_epoch_saved": 44,
+  "class_order_for_logits": [
+    "HC_0",
+    "ASD_1"
+  ],
+  "positive_class_for_auc": "ASD_1",
+  "best_monitor_auc_from_training": 0.831304347826087,
+  "training_epoch_saved": 42,
   "split_info": {
+    "kind": "tangent",
+    "class_order_for_logits": [
+      "HC_0",
+      "ASD_1"
+    ],
+    "positive_class_for_auc": "ASD_1",
     "monitor_ratio": 0.1,
     "monitor_seed": 42,
     "template_k": 20,
@@ -508,15 +520,15 @@
       "ASD_1": 27,
       "HC_0": 26
     },
-    "asd_num_edges_directed": 3952,
-    "hc_num_edges_directed": 3838
+    "asd_num_edges_directed": 3936,
+    "hc_num_edges_directed": 3860
   },
-  "accuracy": 0.6226415094339622,
-  "auc": 0.6452991452991453,
+  "accuracy": 0.5660377358490566,
+  "auc": 0.6638176638176638,
   "confusion_matrix": [
     [
-      15,
-      11
+      12,
+      14
     ],
     [
       9,

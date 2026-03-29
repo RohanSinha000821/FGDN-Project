@@ -16,10 +16,14 @@ from torch_geometric.loader import DataLoader
 from src.models.fgdn_model_weighted import FGDNModelWeighted
 
 
+SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance", "precision"]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train weighted-template FGDN on one atlas/fold.")
     parser.add_argument("--project-root", type=str, default="D:/FGDN_Project")
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
+    parser.add_argument("--kind", type=str, choices=SUPPORTED_KINDS, default="tangent")
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
     parser.add_argument("--fold", type=int, required=True)
 
@@ -41,13 +45,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_fold_datasets(project_root: Path, atlas: str, num_folds: int, fold: int):
+def load_fold_datasets(project_root: Path, atlas: str, kind: str, num_folds: int, fold: int):
     fold_dir = (
         project_root
         / "data"
         / "processed"
         / "pyg_datasets"
         / atlas
+        / kind
         / f"{num_folds}_fold"
         / f"fold_{fold}"
     )
@@ -158,8 +163,8 @@ def build_templates_from_inner_train(inner_train_dataset, k: int):
     asd_mean_fc = asd_x.mean(axis=0)
     hc_mean_fc = hc_x.mean(axis=0)
 
-    asd_edge_index, asd_edge_weight, asd_adj, asd_theta = build_weighted_knn_graph(asd_mean_fc, k=k)
-    hc_edge_index, hc_edge_weight, hc_adj, hc_theta = build_weighted_knn_graph(hc_mean_fc, k=k)
+    asd_edge_index, asd_edge_weight, _, asd_theta = build_weighted_knn_graph(asd_mean_fc, k=k)
+    hc_edge_index, hc_edge_weight, _, hc_theta = build_weighted_knn_graph(hc_mean_fc, k=k)
 
     return {
         "asd_mean_fc": asd_mean_fc,
@@ -170,8 +175,6 @@ def build_templates_from_inner_train(inner_train_dataset, k: int):
         "hc_edge_weight": hc_edge_weight,
         "asd_theta": asd_theta,
         "hc_theta": hc_theta,
-        "asd_adjacency": asd_adj,
-        "hc_adjacency": hc_adj,
     }
 
 
@@ -235,7 +238,7 @@ def run_one_epoch(model, loader, criterion, optimizer, device):
 
         running_loss += loss.item() * batch.num_graphs
 
-        probs = torch.softmax(logits, dim=1)[:, 1]
+        probs = torch.softmax(logits, dim=1)[:, 1]  # ASD prob
         preds = torch.argmax(logits, dim=1)
 
         y_true.extend(batch.y.detach().cpu().numpy().tolist())
@@ -268,7 +271,7 @@ def evaluate(model, loader, criterion, device):
 
         running_loss += loss.item() * batch.num_graphs
 
-        probs = torch.softmax(logits, dim=1)[:, 1]
+        probs = torch.softmax(logits, dim=1)[:, 1]  # ASD prob
         preds = torch.argmax(logits, dim=1)
 
         y_true.extend(batch.y.detach().cpu().numpy().tolist())
@@ -305,13 +308,17 @@ def main():
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
 
     print("=" * 72)
-    print(f"Training weighted FGDN | atlas={args.atlas} | folds={args.num_folds} | fold={args.fold}")
+    print(
+        f"Training weighted FGDN | atlas={args.atlas} | kind={args.kind} | "
+        f"folds={args.num_folds} | fold={args.fold}"
+    )
     print(f"Using device: {device}")
     print("=" * 72)
 
     outer_train_dataset, raw_test_dataset, dataset_summary = load_fold_datasets(
         project_root=project_root,
         atlas=args.atlas,
+        kind=args.kind,
         num_folds=args.num_folds,
         fold=args.fold,
     )
@@ -422,6 +429,9 @@ def main():
     patience_counter = 0
 
     split_info = {
+        "kind": args.kind,
+        "class_order_for_logits": ["HC_0", "ASD_1"],
+        "positive_class_for_auc": "ASD_1",
         "monitor_ratio": args.monitor_ratio,
         "monitor_seed": args.monitor_seed,
         "template_k": args.template_k,

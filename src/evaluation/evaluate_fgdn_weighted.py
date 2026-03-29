@@ -12,10 +12,14 @@ from torch_geometric.loader import DataLoader
 from src.models.fgdn_model_weighted import FGDNModelWeighted
 
 
+SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance", "precision"]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate weighted FGDN checkpoint on one fold.")
     parser.add_argument("--project-root", type=str, default="D:/FGDN_Project")
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
+    parser.add_argument("--kind", type=str, choices=SUPPORTED_KINDS, default="tangent")
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
     parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -29,13 +33,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_fold_datasets(project_root: Path, atlas: str, num_folds: int, fold: int):
+def load_fold_datasets(project_root: Path, atlas: str, kind: str, num_folds: int, fold: int):
     fold_dir = (
         project_root
         / "data"
         / "processed"
         / "pyg_datasets"
         / atlas
+        / kind
         / f"{num_folds}_fold"
         / f"fold_{fold}"
     )
@@ -201,7 +206,7 @@ def evaluate(model, loader, device):
         batch = batch.to(device)
 
         logits, _ = model(batch)
-        probs = torch.softmax(logits, dim=1)[:, 1]
+        probs = torch.softmax(logits, dim=1)[:, 1]  # ASD prob
         preds = torch.argmax(logits, dim=1)
 
         y_true.extend(batch.y.detach().cpu().numpy().tolist())
@@ -238,6 +243,7 @@ def main():
     outer_train_dataset, raw_test_dataset = load_fold_datasets(
         project_root=project_root,
         atlas=args.atlas,
+        kind=args.kind,
         num_folds=args.num_folds,
         fold=args.fold,
     )
@@ -249,6 +255,13 @@ def main():
         fold=args.fold,
         checkpoint_type=args.checkpoint_type,
     )
+
+    ckpt_kind = checkpoint.get("split_info", {}).get("kind", None)
+    if ckpt_kind is not None and ckpt_kind != args.kind:
+        raise ValueError(
+            f"Kind mismatch: checkpoint was trained with kind={ckpt_kind}, "
+            f"but evaluation was requested with kind={args.kind}"
+        )
 
     template_bundle = rebuild_templates_from_checkpoint_split(
         outer_train_dataset=outer_train_dataset,
@@ -288,10 +301,13 @@ def main():
         json.dump(
             {
                 "atlas": args.atlas,
+                "kind": args.kind,
                 "num_folds": args.num_folds,
                 "fold": args.fold,
                 "checkpoint_path": str(ckpt_path),
                 "checkpoint_type": args.checkpoint_type,
+                "class_order_for_logits": ["HC_0", "ASD_1"],
+                "positive_class_for_auc": "ASD_1",
                 "best_monitor_auc_from_training": checkpoint.get("best_monitor_auc", None),
                 "training_epoch_saved": checkpoint.get("epoch", None),
                 "split_info": checkpoint.get("split_info", None),
@@ -322,6 +338,7 @@ def main():
 
     print("=" * 72)
     print(f"Checkpoint                : {ckpt_path}")
+    print(f"Kind                      : {args.kind}")
     print(f"Best monitor AUC (train)  : {checkpoint.get('best_monitor_auc', None)}")
     print(f"ASD template edges        : {asd_edge_index_np.shape[1]}")
     print(f"HC template edges         : {hc_edge_index_np.shape[1]}")

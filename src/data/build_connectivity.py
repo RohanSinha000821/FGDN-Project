@@ -21,12 +21,27 @@ ATLAS_CONFIG = {
         "suffix": "rois_ho.1D",
         "expected_rois": 111,
     },
+    # Add MODL later when integrated end-to-end.
+}
+
+# These kinds are per-subject estimators and can be computed globally
+# without cross-subject leakage.
+NON_LEAKY_KINDS = {
+    "correlation",
+    "partial correlation",
+    "covariance",
+    "precision",
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build functional connectivity matrices from ABIDE ROI time-series."
+        description=(
+            "Collect matched ABIDE ROI time-series and optionally build "
+            "non-leaky connectivity matrices. "
+            "Important: tangent connectivity is NOT computed globally here, "
+            "because tangent must be fit within each training fold only."
+        )
     )
     parser.add_argument(
         "--project-root",
@@ -46,7 +61,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=["tangent", "correlation", "partial correlation", "covariance", "precision"],
         default="tangent",
-        help="Connectivity type for nilearn ConnectivityMeasure.",
+        help=(
+            "Connectivity kind. "
+            "For kind='tangent', this script will save only the subject bundle "
+            "and a tangent placeholder/stub, not connectivity.npy."
+        ),
     )
     parser.add_argument(
         "--min-timepoints",
@@ -57,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-timeseries-info",
         action="store_true",
-        help="If set, saves extra metadata about timeseries shapes.",
+        help="If set, saves subject-level metadata CSV.",
     )
     return parser.parse_args()
 
@@ -86,8 +105,8 @@ def load_phenotypic_csv(project_root: Path) -> pd.DataFrame:
     df["SUB_ID"] = df["SUB_ID"].astype(str).str.extract(r"(\d+)")[0].str.zfill(7)
     df = df.dropna(subset=["SUB_ID", "DX_GROUP"])
 
-    # FGDN/ABIDE convention often uses 1=ASD, 2=HC in DX_GROUP.
-    # We map to binary labels: ASD -> 1, HC -> 0
+    # Map ABIDE convention to binary labels used in the project:
+    # ASD -> 1, HC -> 0
     dx_map = {1: 1, 2: 0}
     df = df[df["DX_GROUP"].isin(dx_map.keys())].copy()
     df["label"] = df["DX_GROUP"].map(dx_map)
@@ -97,10 +116,10 @@ def load_phenotypic_csv(project_root: Path) -> pd.DataFrame:
 
 def extract_subject_id(file_path: Path) -> str:
     """
-    Extract the ABIDE numeric subject ID from filenames like:
-    Pitt_0050004_rois_aal.1D
-    Leuven_1_0050682_rois_aal.1D
-    MaxMun_c_0051328_rois_ho.1D
+    Extract ABIDE numeric subject ID from filenames like:
+      Pitt_0050004_rois_aal.1D
+      Leuven_1_0050682_rois_aal.1D
+      MaxMun_c_0051328_rois_ho.1D
     """
     match = re.search(r"_(\d{7})_rois_", file_path.name)
     if not match:
@@ -135,7 +154,6 @@ def read_timeseries(file_path: Path, expected_rois: int, min_timepoints: int) ->
     ts = np.loadtxt(file_path, dtype=np.float64)
 
     if ts.ndim == 1:
-        # Rare case: a single timepoint row or malformed shape
         ts = np.expand_dims(ts, axis=0)
 
     if ts.ndim != 2:
@@ -145,7 +163,8 @@ def read_timeseries(file_path: Path, expected_rois: int, min_timepoints: int) ->
 
     if n_timepoints < min_timepoints:
         raise ValueError(
-            f"Too few timepoints ({n_timepoints}) in {file_path}; minimum required is {min_timepoints}"
+            f"Too few timepoints ({n_timepoints}) in {file_path}; "
+            f"minimum required is {min_timepoints}"
         )
 
     if n_rois != expected_rois:
@@ -207,7 +226,7 @@ def collect_subject_timeseries(
             )
             continue
 
-        timeseries_list.append(ts)
+        timeseries_list.append(ts.astype(np.float32))
         subject_ids.append(subject_id)
         labels.append(int(subj_to_label[subject_id]))
         metadata_rows.append(
@@ -237,31 +256,84 @@ def collect_subject_timeseries(
     )
 
 
-def compute_connectivity(
-    timeseries_list: List[np.ndarray],
-    kind: str,
-) -> np.ndarray:
+def compute_non_leaky_connectivity(timeseries_list: List[np.ndarray], kind: str) -> np.ndarray:
+    """
+    Safe only for per-subject estimators like correlation/covariance/precision.
+    NOT used for tangent.
+    """
+    if kind not in NON_LEAKY_KINDS:
+        raise ValueError(
+            f"compute_non_leaky_connectivity called with unsupported kind={kind}. "
+            "Tangent must be computed inside CV folds later."
+        )
+
     estimator = ConnectivityMeasure(
         kind=kind,
         cov_estimator=LedoitWolf(store_precision=False),
         vectorize=False,
         discard_diagonal=False,
     )
-
     connectivity = estimator.fit_transform(timeseries_list)
     return connectivity.astype(np.float32)
 
 
-def save_outputs(
+def save_subject_bundle(
+    project_root: Path,
+    atlas_name: str,
+    subject_ids: np.ndarray,
+    labels: np.ndarray,
+    timeseries_list: List[np.ndarray],
+    metadata_rows: List[Dict],
+    save_timeseries_info: bool,
+) -> Path:
+    """
+    Canonical leakage-free bundle saved once per atlas.
+    Later scripts should use this bundle to build fold-specific tangent features.
+    """
+    out_dir = project_root / "data" / "interim" / "subject_timeseries" / atlas_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use an object array so variable-length time series are supported too.
+    ts_obj = np.empty(len(timeseries_list), dtype=object)
+    for i, ts in enumerate(timeseries_list):
+        ts_obj[i] = ts
+
+    np.save(out_dir / "subject_ids.npy", subject_ids, allow_pickle=True)
+    np.save(out_dir / "labels.npy", labels, allow_pickle=True)
+    np.save(out_dir / "timeseries.npy", ts_obj, allow_pickle=True)
+
+    summary = {
+        "atlas": atlas_name,
+        "num_subjects": int(len(subject_ids)),
+        "label_distribution": {
+            "ASD_1": int((labels == 1).sum()),
+            "HC_0": int((labels == 0).sum()),
+        },
+        "example_timeseries_shape": list(timeseries_list[0].shape),
+        "storage_note": (
+            "timeseries.npy is the canonical leakage-free subject bundle. "
+            "For tangent connectivity, fit the tangent model inside each training fold only."
+        ),
+    }
+
+    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    if save_timeseries_info:
+        pd.DataFrame(metadata_rows).to_csv(out_dir / "subject_metadata.csv", index=False)
+
+    print(f"[{atlas_name}] Saved subject bundle to: {out_dir}")
+    return out_dir
+
+
+def save_connectivity_outputs(
     project_root: Path,
     atlas_name: str,
     kind: str,
     subject_ids: np.ndarray,
     labels: np.ndarray,
     connectivity: np.ndarray,
-    metadata_rows: List[Dict],
-    save_timeseries_info: bool,
-) -> None:
+) -> Path:
     out_dir = (
         project_root
         / "data"
@@ -272,8 +344,8 @@ def save_outputs(
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    np.save(out_dir / "subject_ids.npy", subject_ids)
-    np.save(out_dir / "labels.npy", labels)
+    np.save(out_dir / "subject_ids.npy", subject_ids, allow_pickle=True)
+    np.save(out_dir / "labels.npy", labels, allow_pickle=True)
     np.save(out_dir / "connectivity.npy", connectivity)
 
     summary = {
@@ -286,17 +358,68 @@ def save_outputs(
             "ASD_1": int((labels == 1).sum()),
             "HC_0": int((labels == 0).sum()),
         },
+        "leakage_status": "safe_global_compute_for_this_kind",
     }
 
     with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    if save_timeseries_info:
-        metadata_df = pd.DataFrame(metadata_rows)
-        metadata_df.to_csv(out_dir / "subject_metadata.csv", index=False)
-
-    print(f"[{atlas_name}] Saved outputs to: {out_dir}")
+    print(f"[{atlas_name}] Saved {kind} connectivity to: {out_dir}")
     print(f"[{atlas_name}] connectivity.npy shape: {connectivity.shape}")
+    return out_dir
+
+
+def save_tangent_stub(
+    project_root: Path,
+    atlas_name: str,
+    subject_ids: np.ndarray,
+    labels: np.ndarray,
+    timeseries_bundle_dir: Path,
+) -> Path:
+    """
+    Keeps create_cv_splits.py usable, because that script currently reads
+    subject_ids.npy and labels.npy from connectivity_matrices/<atlas>/tangent/.
+    We intentionally do NOT save connectivity.npy here.
+    """
+    out_dir = (
+        project_root
+        / "data"
+        / "interim"
+        / "connectivity_matrices"
+        / atlas_name
+        / "tangent"
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(out_dir / "subject_ids.npy", subject_ids, allow_pickle=True)
+    np.save(out_dir / "labels.npy", labels, allow_pickle=True)
+
+    summary = {
+        "atlas": atlas_name,
+        "kind": "tangent",
+        "num_subjects": int(len(subject_ids)),
+        "label_distribution": {
+            "ASD_1": int((labels == 1).sum()),
+            "HC_0": int((labels == 0).sum()),
+        },
+        "connectivity_saved": False,
+        "reason": (
+            "Tangent connectivity must be fit later within each training fold only. "
+            "Global tangent computation here would leak information across folds."
+        ),
+        "timeseries_bundle_dir": str(timeseries_bundle_dir),
+        "next_step": (
+            "Use subject_timeseries/<atlas>/timeseries.npy with CV split indices "
+            "to build fold-specific tangent matrices downstream."
+        ),
+    }
+
+    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"[{atlas_name}] Saved tangent stub to: {out_dir}")
+    print(f"[{atlas_name}] Note: connectivity.npy was intentionally NOT created for tangent.")
+    return out_dir
 
 
 def process_atlas(
@@ -318,7 +441,27 @@ def process_atlas(
         min_timepoints=min_timepoints,
     )
 
-    connectivity = compute_connectivity(
+    timeseries_bundle_dir = save_subject_bundle(
+        project_root=project_root,
+        atlas_name=atlas_name,
+        subject_ids=subject_ids,
+        labels=labels,
+        timeseries_list=timeseries_list,
+        metadata_rows=metadata_rows,
+        save_timeseries_info=save_timeseries_info,
+    )
+
+    if kind == "tangent":
+        save_tangent_stub(
+            project_root=project_root,
+            atlas_name=atlas_name,
+            subject_ids=subject_ids,
+            labels=labels,
+            timeseries_bundle_dir=timeseries_bundle_dir,
+        )
+        return
+
+    connectivity = compute_non_leaky_connectivity(
         timeseries_list=timeseries_list,
         kind=kind,
     )
@@ -326,15 +469,13 @@ def process_atlas(
     if connectivity.shape[0] != len(subject_ids):
         raise RuntimeError("Subject count mismatch between IDs and connectivity matrices")
 
-    save_outputs(
+    save_connectivity_outputs(
         project_root=project_root,
         atlas_name=atlas_name,
         kind=kind,
         subject_ids=subject_ids,
         labels=labels,
         connectivity=connectivity,
-        metadata_rows=metadata_rows,
-        save_timeseries_info=save_timeseries_info,
     )
 
 
@@ -360,8 +501,11 @@ def main() -> None:
         )
 
     print("=" * 72)
-    print("Finished building connectivity matrices.")
+    print("Finished build_connectivity step.")
     print("=" * 72)
+    if args.kind == "tangent":
+        print("Important: tangent connectivity matrices were NOT built globally.")
+        print("Next, keep CV splits and move to fold-specific tangent construction downstream.")
 
 
 if __name__ == "__main__":

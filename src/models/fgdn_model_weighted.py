@@ -71,7 +71,17 @@ class FGDNBranchWeighted(nn.Module):
 
 class FGDNModelWeighted(nn.Module):
     """
-    Dual-template FGDN model with weighted ASD and HC templates.
+    Weighted dual-template FGDN model.
+
+    Project label convention:
+      HC = 0
+      ASD = 1
+
+    Therefore CrossEntropy logits must be returned as:
+      [HC_logit, ASD_logit]
+
+    branch_scores are returned separately as:
+      [ASD_branch_score, HC_branch_score]
     """
 
     def __init__(
@@ -124,8 +134,10 @@ class FGDNModelWeighted(nn.Module):
             batch,
         )
 
-        logits = torch.cat([asd_score, hc_score], dim=1)
-        return logits, logits
+        logits = torch.cat([hc_score, asd_score], dim=1)        # [HC, ASD]
+        branch_scores = torch.cat([asd_score, hc_score], dim=1) # [ASD, HC]
+
+        return logits, branch_scores
 
 
 def build_fgdn_model_weighted(num_node_features: int, num_nodes: int) -> FGDNModelWeighted:

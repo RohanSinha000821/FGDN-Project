@@ -1,12 +1,24 @@
 {
   "atlas": "HarvardOxford",
+  "kind": "tangent",
   "num_folds": 10,
   "fold": 8,
   "checkpoint_path": "D:\\FGDN_Project\\outputs\\checkpoints\\fgdn\\HarvardOxford\\10_fold\\fold_8\\best_fgdn.pt",
   "checkpoint_type": "best",
-  "best_monitor_auc_from_training": 0.7303582652419862,
-  "training_epoch_saved": 23,
+  "class_order_for_logits": [
+    "HC_0",
+    "ASD_1"
+  ],
+  "positive_class_for_auc": "ASD_1",
+  "best_monitor_auc_from_training": 0.7548711502199874,
+  "training_epoch_saved": 27,
   "split_info": {
+    "kind": "tangent",
+    "class_order_for_logits": [
+      "HC_0",
+      "ASD_1"
+    ],
+    "positive_class_for_auc": "ASD_1",
     "monitor_ratio": 0.1,
     "monitor_seed": 42,
     "template_k": 20,
@@ -826,15 +838,15 @@
       "ASD_1": 41,
       "HC_0": 47
     },
-    "asd_num_edges_directed": 3640,
-    "hc_num_edges_directed": 3730
+    "asd_num_edges_directed": 3624,
+    "hc_num_edges_directed": 3738
   },
-  "accuracy": 0.6136363636363636,
-  "auc": 0.6912298910223145,
+  "accuracy": 0.6477272727272727,
+  "auc": 0.7067981318111054,
   "confusion_matrix": [
     [
-      28,
-      19
+      31,
+      16
     ],
     [
       15,

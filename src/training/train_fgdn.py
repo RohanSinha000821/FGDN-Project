@@ -16,10 +16,14 @@ from torch_geometric.loader import DataLoader
 from src.models.fgdn_model import FGDNModel
 
 
+SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance", "precision"]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train FGDN on one atlas/fold.")
     parser.add_argument("--project-root", type=str, default="D:/FGDN_Project")
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
+    parser.add_argument("--kind", type=str, choices=SUPPORTED_KINDS, default="tangent")
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
     parser.add_argument("--fold", type=int, required=True)
 
@@ -56,13 +60,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_fold_datasets(project_root: Path, atlas: str, num_folds: int, fold: int):
+def load_fold_datasets(project_root: Path, atlas: str, kind: str, num_folds: int, fold: int):
     fold_dir = (
         project_root
         / "data"
         / "processed"
         / "pyg_datasets"
         / atlas
+        / kind
         / f"{num_folds}_fold"
         / f"fold_{fold}"
     )
@@ -222,6 +227,7 @@ def run_one_epoch(model, loader, criterion, optimizer, device):
 
         running_loss += loss.item() * batch.num_graphs
 
+        # index 1 is ASD by construction of FGDNModel logits = [HC, ASD]
         probs = torch.softmax(logits, dim=1)[:, 1]
         preds = torch.argmax(logits, dim=1)
 
@@ -296,13 +302,17 @@ def main():
     )
 
     print("=" * 72)
-    print(f"Training FGDN | atlas={args.atlas} | folds={args.num_folds} | fold={args.fold}")
+    print(
+        f"Training FGDN | atlas={args.atlas} | kind={args.kind} | "
+        f"folds={args.num_folds} | fold={args.fold}"
+    )
     print(f"Using device: {device}")
     print("=" * 72)
 
     outer_train_dataset, raw_test_dataset, dataset_summary = load_fold_datasets(
         project_root=project_root,
         atlas=args.atlas,
+        kind=args.kind,
         num_folds=args.num_folds,
         fold=args.fold,
     )
@@ -392,6 +402,9 @@ def main():
     patience_counter = 0
 
     split_info = {
+        "kind": args.kind,
+        "class_order_for_logits": ["HC_0", "ASD_1"],
+        "positive_class_for_auc": "ASD_1",
         "monitor_ratio": args.monitor_ratio,
         "monitor_seed": args.monitor_seed,
         "template_k": args.template_k,
@@ -437,8 +450,12 @@ def main():
 
         print(
             f"Epoch {epoch:03d} | "
-            f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['acc']:.4f} train_auc={train_metrics['auc']:.4f} | "
-            f"monitor_loss={monitor_metrics['loss']:.4f} monitor_acc={monitor_metrics['acc']:.4f} monitor_auc={monitor_metrics['auc']:.4f}"
+            f"train_loss={train_metrics['loss']:.4f} "
+            f"train_acc={train_metrics['acc']:.4f} "
+            f"train_auc={train_metrics['auc']:.4f} | "
+            f"monitor_loss={monitor_metrics['loss']:.4f} "
+            f"monitor_acc={monitor_metrics['acc']:.4f} "
+            f"monitor_auc={monitor_metrics['auc']:.4f}"
         )
 
         current_monitor_loss = monitor_metrics["loss"]

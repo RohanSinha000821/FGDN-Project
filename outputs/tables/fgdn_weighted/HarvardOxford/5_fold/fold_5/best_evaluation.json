@@ -1,12 +1,24 @@
 {
   "atlas": "HarvardOxford",
+  "kind": "tangent",
   "num_folds": 5,
   "fold": 5,
   "checkpoint_path": "D:\\FGDN_Project\\outputs\\checkpoints\\fgdn_weighted\\HarvardOxford\\5_fold\\fold_5\\best_fgdn_weighted.pt",
   "checkpoint_type": "best",
-  "best_monitor_auc_from_training": 0.5980861244019139,
-  "training_epoch_saved": 16,
+  "class_order_for_logits": [
+    "HC_0",
+    "ASD_1"
+  ],
+  "positive_class_for_auc": "ASD_1",
+  "best_monitor_auc_from_training": 0.5709728867623605,
+  "training_epoch_saved": 11,
   "split_info": {
+    "kind": "tangent",
+    "class_order_for_logits": [
+      "HC_0",
+      "ASD_1"
+    ],
+    "positive_class_for_auc": "ASD_1",
     "monitor_ratio": 0.1,
     "monitor_seed": 42,
     "template_k": 20,
@@ -740,33 +752,33 @@
       "ASD_1": 81,
       "HC_0": 95
     },
-    "asd_num_edges_directed": 3796,
-    "hc_num_edges_directed": 3786,
-    "asd_theta": 0.09022292012164185,
-    "hc_theta": 0.07940178559841336,
-    "asd_edge_weight_min": 0.3541732728481293,
-    "asd_edge_weight_max": 0.793750524520874,
-    "hc_edge_weight_min": 0.2792397141456604,
-    "hc_edge_weight_max": 0.8336955308914185
+    "asd_num_edges_directed": 3772,
+    "hc_num_edges_directed": 3888,
+    "asd_theta": 0.08130939614933891,
+    "hc_theta": 0.08339934147021792,
+    "asd_edge_weight_min": 0.3077499270439148,
+    "asd_edge_weight_max": 0.7933270931243896,
+    "hc_edge_weight_min": 0.3356070816516876,
+    "hc_edge_weight_max": 0.8219920992851257
   },
   "weighted_templates": true,
   "template_weighting": "gaussian_knn_mean_distance_bandwidth",
-  "asd_theta": 0.09022292012164185,
-  "hc_theta": 0.07940178559841336,
-  "asd_edge_weight_min": 0.3541732728481293,
-  "asd_edge_weight_max": 0.793750524520874,
-  "hc_edge_weight_min": 0.2792397141456604,
-  "hc_edge_weight_max": 0.8336955308914185,
-  "accuracy": 0.6931818181818182,
-  "auc": 0.7532163742690058,
+  "asd_theta": 0.08130939614933891,
+  "hc_theta": 0.08339934147021792,
+  "asd_edge_weight_min": 0.3077499270439148,
+  "asd_edge_weight_max": 0.7933270931243896,
+  "hc_edge_weight_min": 0.3356070816516876,
+  "hc_edge_weight_max": 0.8219920992851257,
+  "accuracy": 0.6590909090909091,
+  "auc": 0.7239766081871345,
   "confusion_matrix": [
     [
-      84,
-      11
+      88,
+      7
     ],
     [
-      43,
-      38
+      53,
+      28
     ]
   ]
 }
