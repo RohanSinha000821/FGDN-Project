@@ -1,0 +1,38 @@
+{
+  "atlas": "HarvardOxford",
+  "num_folds_requested": 5,
+  "num_folds_found": 5,
+  "checkpoint_type": "best",
+  "model_variant": "fgdn_weighted",
+  "fold_results": [
+    {
+      "fold": 1,
+      "accuracy": 0.6497175141242938,
+      "auc": 0.724775353016688
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.6440677966101694,
+      "auc": 0.7251604621309372
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.6666666666666666,
+      "auc": 0.7441591784338896
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.6271186440677966,
+      "auc": 0.70434670781893
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.6931818181818182,
+      "auc": 0.7532163742690058
+    }
+  ],
+  "accuracy_mean": 0.656150487930149,
+  "accuracy_std": 0.022414869952758213,
+  "auc_mean": 0.7303316151338902,
+  "auc_std": 0.01701612169532071
+}

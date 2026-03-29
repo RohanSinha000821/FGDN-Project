@@ -1,0 +1,38 @@
+{
+  "atlas": "AAL",
+  "num_folds_requested": 5,
+  "num_folds_found": 5,
+  "checkpoint_type": "best",
+  "model_variant": "fgdn_weighted",
+  "fold_results": [
+    {
+      "fold": 1,
+      "accuracy": 0.6822429906542056,
+      "auc": 0.7248251748251747
+    },
+    {
+      "fold": 2,
+      "accuracy": 0.6981132075471698,
+      "auc": 0.788235294117647
+    },
+    {
+      "fold": 3,
+      "accuracy": 0.5660377358490566,
+      "auc": 0.6791443850267379
+    },
+    {
+      "fold": 4,
+      "accuracy": 0.6415094339622641,
+      "auc": 0.7411764705882352
+    },
+    {
+      "fold": 5,
+      "accuracy": 0.6226415094339622,
+      "auc": 0.681283422459893
+    }
+  ],
+  "accuracy_mean": 0.6421089754893317,
+  "accuracy_std": 0.04671913605089526,
+  "auc_mean": 0.7229329494035376,
+  "auc_std": 0.040627390445938515
+}
