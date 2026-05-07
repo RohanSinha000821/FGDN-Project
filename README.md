@@ -618,15 +618,7 @@ python -m src.evaluation.summarize_fgdn_cv_weighted --atlas HarvardOxford --num-
 
 ---
 
-## 13. Recommended Reporting Statement
-
-A good summary statement for the report:
-
-> After correcting tangent-feature leakage and FGDN ASD/HC logit semantics, the best mean AUC was obtained with **AAL + 10-fold + weighted templates** (AUC 0.760592), while the best mean accuracy was obtained with **HarvardOxford + 10-fold + unweighted templates** (accuracy 0.692352). Weighted templates improved AAL consistently, but did not show a consistent benefit for HarvardOxford.
-
----
-
-## 14. Output Locations
+## 13. Output Locations
 
 ### Checkpoints
 ```text
@@ -653,7 +645,7 @@ data/processed/pyg_datasets/<atlas>/tangent/<n_folds>_fold/fold_<k>/
 
 ---
 
-## 15. What is Not Included in Git
+## 14. What is Not Included in Git
 
 This repository should **not** include:
 - raw ABIDE dataset files
@@ -672,7 +664,7 @@ Recommended to keep in Git:
 
 ---
 
-## 16. Clean Rebuild Order
+## 15. Clean Rebuild Order
 
 If rebuilding from scratch after cloning and downloading data, use this order:
 
@@ -691,7 +683,7 @@ If rebuilding from scratch after cloning and downloading data, use this order:
 
 ---
 
-## 17. Pending Work / Future Extensions
+## 16. Pending Work / Future Extensions
 
 1. Integrate **MODL_128**
 2. Run static FGDN on MODL_128
@@ -702,7 +694,7 @@ If rebuilding from scratch after cloning and downloading data, use this order:
 
 ---
 
-## 18. Final Status
+## 17. Final Status
 
 ### Completed
 - Folder structure setup
