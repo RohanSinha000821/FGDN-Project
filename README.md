@@ -1,87 +1,320 @@
-# FGDN Project — Full Reproduction and Run Guide
+# FGDN Project
 
-Implementation and reproduction workflow for the paper:
+This repository contains my implementation and reproduction of the paper:
 
-**Identification of Autism Spectrum Disorder With Functional Graph Discriminative Network (FGDN)**
+**Identification of Autism Spectrum Disorder With Functional Graph Discriminative Network (FGDN)**  
+Li et al., *Frontiers in Neuroscience*, 2021.
 
-This document is the full working reference for this repository: project structure, dataset setup, exact execution order, commands to run, corrected methodology notes, and the final results obtained in the current codebase.
+The main goal of this project is to classify **Autism Spectrum Disorder (ASD)** and **Healthy Control (HC)** subjects using **ABIDE resting-state fMRI ROI time-series** and a graph neural network model based on the FGDN architecture.
 
----
+I have completed the static functional connectivity version of the project using two atlases:
 
-## 1. Project Objective
+- **AAL**
+- **HarvardOxford**
 
-This repository reproduces the **FGDN** pipeline on **ABIDE preprocessed rs-fMRI ROI time-series data** for ASD vs HC classification.
+I also implemented and evaluated two model variants:
 
-Current scope:
-- Static functional connectivity reproduction
-- Atlases used:
-  - **AAL**
-  - **HarvardOxford**
-- Model variants:
-  - **Unweighted FGDN**
-  - **Weighted FGDN**
+- **Unweighted FGDN**
+- **Weighted FGDN**
 
-Planned future scope:
-- **MODL_128** integration
-- **Dynamic functional connectivity (dynamic FC)** extension
-- Report / paper writing and visualizations
+The next extension of this project is to add a clean ablation-study framework without disturbing the completed baseline results.
 
 ---
 
-## 2. Important Methodology Corrections Applied
+## 1. Current Project Status
 
-The current codebase is **not** the original initial pipeline. It includes important corrections made during sanity-checking.
+### Completed
 
-### 2.1 Tangent leakage fix
-Earlier, tangent connectivity was being fit globally before cross-validation, which is incorrect.
+- ABIDE phenotypic and ROI time-series download pipeline
+- Dataset verification
+- AAL and HarvardOxford subject matching
+- Leakage-safe tangent functional connectivity pipeline
+- Stratified 5-fold and 10-fold CV splits
+- Fold-specific ASD/HC graph template construction
+- PyTorch Geometric dataset creation
+- Unweighted FGDN training and evaluation
+- Weighted FGDN training and evaluation
+- Cross-validation result summarization
+- Report figures and presentation figures
+- ACM-style LaTeX report
+- Beamer presentation
 
-**Corrected behavior now:**
-- `build_connectivity.py` stores a leakage-free **subject time-series bundle**
-- Tangent connectivity is fit **inside each outer training fold only**
-- Outer test subjects are transformed using the estimator fit on outer-train only
+### Current extension in progress
 
-### 2.2 Strict fold protocol
-Current results use:
+I am now extending the project with **ablation studies**. The goal is to vary important parameters such as KNN neighbours, Chebyshev order, hidden channels, dropout, learning rate, weight decay, batch size, and weighted vs unweighted graph templates while keeping the existing project files mostly unchanged.
 
-- outer train / outer test split from CV
-- inner-train / monitor split inside each outer training fold
-- ASD/HC templates rebuilt from **inner-train only**
-- checkpoint chosen by **lowest monitor loss**
-- final evaluation on untouched outer test fold
+---
 
-### 2.3 Class/logit ordering fix
-Project labels are:
+## 2. Dataset
 
-- **HC = 0**
-- **ASD = 1**
+I used **ABIDE preprocessed resting-state fMRI ROI time-series**.
 
-The model output was corrected so logits are ordered as:
+The current pipeline uses:
 
-- `[HC_logit, ASD_logit]`
+- Pipeline: `cpac`
+- Strategy: `nofilt_noglobal`
+- Input file format: `.1D` ROI time-series files
 
-This keeps:
-- `CrossEntropyLoss` correct
-- `softmax(logits)[:, 1]` = ASD probability
+Each subject has a time-series matrix:
 
-### 2.4 Module execution fix
-Training/evaluation scripts should be run using:
+```text
+X_i ∈ R^(T_i × N)
+```
+
+where:
+
+- `T_i` = number of fMRI time points for subject `i`
+- `N` = number of ROIs in the atlas
+
+The label convention used in the project is:
+
+```text
+HC  = 0
+ASD = 1
+```
+
+### Dataset summary
+
+| Atlas | Matched Subjects | ROIs |
+|---|---:|---:|
+| AAL | 531 | 116 |
+| HarvardOxford | 884 | 111 |
+
+---
+
+## 3. Methodology Summary
+
+The overall pipeline is:
+
+```text
+ABIDE ROI time-series
+        ↓
+Subject bundle with labels and time-series
+        ↓
+Stratified 5-fold / 10-fold CV splits
+        ↓
+Fold-specific tangent functional connectivity
+        ↓
+ASD and HC KNN graph templates
+        ↓
+PyTorch Geometric datasets
+        ↓
+FGDN / Weighted FGDN training
+        ↓
+Fold-wise evaluation and CV summary
+```
+
+---
+
+## 4. Important Corrections Already Applied
+
+This project went through several corrections while reproducing the paper. These corrections are important because they affect the validity of the results.
+
+### 4.1 Tangent leakage correction
+
+Initially, tangent connectivity was being fit globally before cross-validation. That is not correct because the test subjects would influence the tangent reference.
+
+The corrected behaviour is:
+
+- For each CV fold, tangent connectivity is fit only on the training subjects.
+- Test subjects are transformed using the tangent estimator fitted on the training subjects.
+- The tangent reference is therefore fold-specific.
+
+This means the test fold remains unseen during preprocessing.
+
+### 4.2 Strict fold protocol
+
+The corrected pipeline follows this protocol:
+
+```text
+Outer train/test split
+        ↓
+Inner train/monitor split inside outer train
+        ↓
+Tangent estimator fit on training data
+        ↓
+ASD/HC templates built from inner-train only
+        ↓
+Checkpoint selected using monitor loss
+        ↓
+Final evaluation on untouched outer test fold
+```
+
+### 4.3 Class/logit ordering correction
+
+The label convention is:
+
+```text
+HC  = 0
+ASD = 1
+```
+
+The model logits are ordered as:
+
+```text
+[HC_logit, ASD_logit]
+```
+
+This keeps `CrossEntropyLoss` consistent and makes:
+
+```text
+softmax(logits)[:, 1]
+```
+
+the ASD probability.
+
+### 4.4 Module execution correction
+
+Training and evaluation should be run with Python module syntax:
 
 ```bash
 python -m src.training.train_fgdn ...
 python -m src.evaluation.evaluate_fgdn ...
 ```
 
-and **not** via direct script path execution like:
+Direct script execution such as:
 
 ```bash
 python src\training\train_fgdn.py ...
 ```
 
-because direct script execution caused `ModuleNotFoundError: No module named 'src'`.
+can cause import errors because Python may not resolve the `src` package correctly.
 
 ---
 
-## 3. Repository Structure
+## 5. Tangent Functional Connectivity
+
+For each subject, the ROI time-series is converted into a covariance matrix.
+
+The sample covariance is:
+
+```text
+S_i(p, q) = cov(X_i[:, p], X_i[:, q])
+```
+
+Instead of directly using raw sample covariance, I use Ledoit-Wolf shrinkage covariance:
+
+```text
+Σ_i = (1 - α)S_i + αμI
+```
+
+where:
+
+- `S_i` = sample covariance matrix
+- `I` = identity matrix
+- `μI` = shrinkage target
+- `α` = shrinkage coefficient
+
+Then a reference covariance is computed from the training subjects using the geometric mean:
+
+```text
+Σ_bar = argmin_Σ Σ_i d_R²(Σ, Σ_i)
+```
+
+where the Riemannian distance is:
+
+```text
+d_R(A, B) = || log(A^(-1/2) B A^(-1/2)) ||_F
+```
+
+Each subject covariance is projected to the tangent space:
+
+```text
+T_i^tan = log(Σ_bar^(-1/2) Σ_i Σ_bar^(-1/2))
+```
+
+The tangent matrix is used as the node feature matrix:
+
+```text
+X_graph = T_i^tan
+```
+
+So each ROI is a node, and each row of the tangent matrix is the feature vector for one ROI.
+
+---
+
+## 6. Graph Construction
+
+For each fold, I compute class-specific mean functional connectivity matrices using only training data:
+
+```text
+F_ASD_bar = mean of ASD training FC matrices
+F_HC_bar  = mean of HC training FC matrices
+```
+
+Then KNN graph templates are built:
+
+```text
+A_ASD = KNN(F_ASD_bar)
+A_HC  = KNN(F_HC_bar)
+```
+
+The default number of KNN neighbours is:
+
+```text
+k = 20
+```
+
+For every subject, two graph views are created:
+
+```text
+G_ASD = (X, A_ASD)
+G_HC  = (X, A_HC)
+```
+
+The same subject feature matrix `X` is used in both branches, but the graph structure is different.
+
+---
+
+## 7. FGDN Model
+
+The FGDN model has two class-specific branches:
+
+- ASD branch using `A_ASD`
+- HC branch using `A_HC`
+
+Each branch uses:
+
+```text
+ChebConv → PReLU → Dropout
+        → ChebConv → PReLU → Dropout
+        → Flatten → Linear → Branch score
+```
+
+The final logits are:
+
+```text
+[s_HC, s_ASD]
+```
+
+---
+
+## 8. Weighted FGDN
+
+I also implemented a weighted version of FGDN.
+
+The unweighted model uses binary graph edges:
+
+```text
+A_ij ∈ {0, 1}
+```
+
+The weighted model uses Gaussian-style KNN edge weights:
+
+```text
+w_ij = exp( - d(i, j)^2 / (2θ^2) )
+```
+
+where:
+
+- `d(i, j)` = distance between ROI feature vectors
+- `θ` = scale parameter estimated from non-zero KNN distances
+
+The aim of weighted FGDN is to preserve edge strength instead of using only binary connectivity.
+
+---
+
+## 9. Repository Structure
 
 ```text
 FGDN_Project/
@@ -98,30 +331,12 @@ FGDN_Project/
 │   │       └── downloads/
 │   ├── interim/
 │   │   ├── subject_timeseries/
-│   │   │   ├── AAL/
-│   │   │   └── HarvardOxford/
 │   │   ├── connectivity_matrices/
-│   │   │   ├── AAL/
-│   │   │   │   └── tangent/
-│   │   │   └── HarvardOxford/
-│   │   │       └── tangent/
 │   │   ├── cv_splits/
-│   │   │   ├── AAL/
-│   │   │   └── HarvardOxford/
 │   │   └── graph_templates/
-│   │       ├── AAL/
-│   │       │   └── tangent/
-│   │       └── HarvardOxford/
-│   │           └── tangent/
 │   └── processed/
 │       ├── pyg_datasets/
-│       │   ├── AAL/
-│       │   │   └── tangent/
-│       │   └── HarvardOxford/
-│       │       └── tangent/
 │       └── logs/
-│           ├── fgdn/
-│           └── fgdn_weighted/
 ├── outputs/
 │   ├── checkpoints/
 │   │   ├── fgdn/
@@ -148,28 +363,30 @@ FGDN_Project/
 │       ├── evaluate_fgdn_weighted.py
 │       ├── summarize_fgdn_cv.py
 │       └── summarize_fgdn_cv_weighted.py
+├── reports/
+├── presentation/
 └── docs/
 ```
 
 ---
 
-## 4. Environment Setup
+## 10. Environment Setup
 
-### 4.1 Clone repository
+### 10.1 Clone the repository
 
 ```bash
 git clone https://github.com/RohanSinha000821/FGDN-Project.git
 cd FGDN-Project
 ```
 
-### 4.2 Create virtual environment
+### 10.2 Create and activate virtual environment
 
 ```bash
 python -m venv venv
 venv\Scripts\activate
 ```
 
-### 4.3 Install dependencies
+### 10.3 Install dependencies
 
 ```bash
 pip install --upgrade pip setuptools wheel
@@ -178,23 +395,21 @@ pip install -r requirements.txt
 
 ---
 
-## 5. Data Download
+## 11. Data Download
 
-### 5.1 Download ABIDE phenotypic CSV
+### 11.1 Download ABIDE phenotypic file
 
 ```bash
 python src\data\download_abide_data.py --download-phenotypic
 ```
 
-### 5.2 Download ROI time-series
-
-#### AAL
+### 11.2 Download AAL ROI time-series
 
 ```bash
 python src\data\download_abide_data.py --derivative rois_aal --pipeline cpac --strategy nofilt_noglobal --out-subdir AAL
 ```
 
-#### HarvardOxford
+### 11.3 Download HarvardOxford ROI time-series
 
 ```bash
 python src\data\download_abide_data.py --derivative rois_ho --pipeline cpac --strategy nofilt_noglobal --out-subdir HarvardOxford
@@ -202,373 +417,113 @@ python src\data\download_abide_data.py --derivative rois_ho --pipeline cpac --st
 
 ---
 
-## 6. Dataset Verification
-
-Run:
+## 12. Dataset Verification
 
 ```bash
 python src\data\verify_abide.py
 ```
 
-What this checks:
-- phenotypic CSV presence
-- ROI file discovery
-- subject ID extraction
-- phenotype ↔ ROI matching
-- ROI dimension sanity check
+This checks phenotypic CSV presence, ROI file discovery, subject ID extraction, phenotype and ROI file matching, and ROI dimension consistency.
 
 ---
 
-## 7. Verified Dataset Used
+## 13. Full Pipeline Execution Order
 
-### AAL
-- Subjects: **531**
-- ROI dimension: **116**
-
-### HarvardOxford
-- Subjects: **884**
-- ROI dimension: **111**
-
-> Important: the HarvardOxford derivative used here has **111 ROIs**.
-
----
-
-## 8. Correct Execution Order
-
-This is the correct order for the **current corrected pipeline**.
-
-### Step 1 — Build leakage-free subject bundle / tangent stub
+### Step 1: Build subject time-series bundle
 
 ```bash
 python src\data\build_connectivity.py --atlas all --kind tangent --save-timeseries-info
 ```
 
-This creates:
-- `data/interim/subject_timeseries/<atlas>/...`
-- `data/interim/connectivity_matrices/<atlas>/tangent/...`
+For tangent mode, global `connectivity.npy` is intentionally not created. Tangent connectivity is computed later inside each fold.
 
-For tangent mode, **`connectivity.npy` is intentionally not created globally**.
-
-### Step 2 — Create CV splits
+### Step 2: Create CV splits
 
 ```bash
 python src\data\create_cv_splits.py --atlas all --folds 5 10 --seed 42
 ```
 
-### Step 3 — Build graph templates
+### Step 3: Build graph templates
 
 ```bash
 python src\data\build_graph_templates.py --atlas all --kind tangent --folds 5 10 --k 20
 ```
 
-### Step 4 — Build PyTorch Geometric datasets
+### Step 4: Build PyTorch Geometric datasets
 
-```bash
-python src\data\build_pyg_datasets.py --atlas all --kind tangent --folds 5 10
-```
-
-### Step 5 — Train FGDN  
-### Step 6 — Evaluate FGDN  
-### Step 7 — Summarize CV results
-
----
-
-## 9. Core Commands by File
-
-### 9.1 Data preparation files
-
-#### `download_abide_data.py`
-Downloads phenotypic CSV and ROI time-series derivatives.
-
-Phenotypic CSV:
-```bash
-python src\data\download_abide_data.py --download-phenotypic
-```
-
-AAL:
-```bash
-python src\data\download_abide_data.py --derivative rois_aal --pipeline cpac --strategy nofilt_noglobal --out-subdir AAL
-```
-
-HarvardOxford:
-```bash
-python src\data\download_abide_data.py --derivative rois_ho --pipeline cpac --strategy nofilt_noglobal --out-subdir HarvardOxford
-```
-
-#### `verify_abide.py`
-```bash
-python src\data\verify_abide.py
-```
-
-#### `build_connectivity.py`
-```bash
-python src\data\build_connectivity.py --atlas all --kind tangent --save-timeseries-info
-```
-
-#### `create_cv_splits.py`
-```bash
-python src\data\create_cv_splits.py --atlas all --folds 5 10 --seed 42
-```
-
-#### `build_graph_templates.py`
-```bash
-python src\data\build_graph_templates.py --atlas all --kind tangent --folds 5 10 --k 20
-```
-
-#### `build_pyg_datasets.py`
 ```bash
 python src\data\build_pyg_datasets.py --atlas all --kind tangent --folds 5 10
 ```
 
 ---
 
-## 10. Training Commands
+## 14. Training and Evaluation
 
-### 10.1 Unweighted FGDN — AAL 5-fold
+### 14.1 Unweighted FGDN
 
-Train:
+Train one fold:
+
 ```bash
 python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 1
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 2
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 3
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 4
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 5
 ```
 
-Evaluate:
+Evaluate one fold:
+
 ```bash
 python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 5 --fold 5 --checkpoint-type best
 ```
 
-Summarize:
+Summarize all folds:
+
 ```bash
 python -m src.evaluation.summarize_fgdn_cv --atlas AAL --num-folds 5 --checkpoint-type best
 ```
 
-### 10.2 Unweighted FGDN — AAL 10-fold
+### 14.2 Weighted FGDN
 
-Train:
-```bash
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 1
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 2
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 3
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 4
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 5
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 6
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 7
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 8
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 9
-python -m src.training.train_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 10
-```
+Train one fold:
 
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 5 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 6 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 7 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 8 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 9 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas AAL --kind tangent --num-folds 10 --fold 10 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv --atlas AAL --num-folds 10 --checkpoint-type best
-```
-
-### 10.3 Unweighted FGDN — HarvardOxford 5-fold
-
-Train:
-```bash
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 1
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 2
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 3
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 4
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 5
-```
-
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 5 --fold 5 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv --atlas HarvardOxford --num-folds 5 --checkpoint-type best
-```
-
-### 10.4 Unweighted FGDN — HarvardOxford 10-fold
-
-Train:
-```bash
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 1
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 2
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 3
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 4
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 5
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 6
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 7
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 8
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 9
-python -m src.training.train_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 10
-```
-
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 5 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 6 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 7 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 8 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 9 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn --atlas HarvardOxford --kind tangent --num-folds 10 --fold 10 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv --atlas HarvardOxford --num-folds 10 --checkpoint-type best
-```
-
-### 10.5 Weighted FGDN — AAL 5-fold
-
-Train:
 ```bash
 python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 1
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 2
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 3
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 4
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 5
 ```
 
-Evaluate:
+Evaluate one fold:
+
 ```bash
 python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 5 --fold 5 --checkpoint-type best
 ```
 
-Summarize:
+Summarize all folds:
+
 ```bash
 python -m src.evaluation.summarize_fgdn_cv_weighted --atlas AAL --num-folds 5 --checkpoint-type best
 ```
 
-### 10.6 Weighted FGDN — AAL 10-fold
-
-Train:
-```bash
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 1
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 2
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 3
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 4
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 5
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 6
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 7
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 8
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 9
-python -m src.training.train_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 10
-```
-
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 5 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 6 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 7 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 8 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 9 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas AAL --kind tangent --num-folds 10 --fold 10 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv_weighted --atlas AAL --num-folds 10 --checkpoint-type best
-```
-
-### 10.7 Weighted FGDN — HarvardOxford 5-fold
-
-Train:
-```bash
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 1
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 2
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 3
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 4
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 5
-```
-
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 5 --fold 5 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv_weighted --atlas HarvardOxford --num-folds 5 --checkpoint-type best
-```
-
-### 10.8 Weighted FGDN — HarvardOxford 10-fold
-
-Train:
-```bash
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 1
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 2
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 3
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 4
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 5
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 6
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 7
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 8
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 9
-python -m src.training.train_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 10
-```
-
-Evaluate:
-```bash
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 1 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 2 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 3 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 4 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 5 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 6 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 7 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 8 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 9 --checkpoint-type best
-python -m src.evaluation.evaluate_fgdn_weighted --atlas HarvardOxford --kind tangent --num-folds 10 --fold 10 --checkpoint-type best
-```
-
-Summarize:
-```bash
-python -m src.evaluation.summarize_fgdn_cv_weighted --atlas HarvardOxford --num-folds 10 --checkpoint-type best
-```
+For 5-fold CV, run folds 1 to 5. For 10-fold CV, run folds 1 to 10.
 
 ---
 
-## 11. Results Obtained in the Current Corrected Pipeline
+## 15. Baseline Experimental Setup
 
-### 11.1 Unweighted FGDN
+These are the baseline values I used before ablation studies:
+
+| Parameter | Value |
+|---|---:|
+| KNN neighbours | 20 |
+| Chebyshev order | 3 |
+| Hidden channels | 64 |
+| Dropout | 0.1 |
+| Batch size | 16 |
+| Learning rate | 0.0001 |
+| Weight decay | 0.0005 |
+| Optimizer | Adam |
+| CV settings | 5-fold, 10-fold |
+
+---
+
+## 16. Results Obtained
+
+### 16.1 Unweighted FGDN
 
 | Atlas | Folds | Accuracy Mean | Accuracy Std | AUC Mean | AUC Std |
 |---|---:|---:|---:|---:|---:|
@@ -577,7 +532,7 @@ python -m src.evaluation.summarize_fgdn_cv_weighted --atlas HarvardOxford --num-
 | HarvardOxford | 5 | 0.671970 | 0.016687 | 0.732362 | 0.011817 |
 | HarvardOxford | 10 | 0.692352 | 0.050286 | 0.739556 | 0.038684 |
 
-### 11.2 Weighted FGDN
+### 16.2 Weighted FGDN
 
 | Atlas | Folds | Accuracy Mean | Accuracy Std | AUC Mean | AUC Std |
 |---|---:|---:|---:|---:|---:|
@@ -586,142 +541,170 @@ python -m src.evaluation.summarize_fgdn_cv_weighted --atlas HarvardOxford --num-
 | HarvardOxford | 5 | 0.656112 | 0.030566 | 0.722158 | 0.023552 |
 | HarvardOxford | 10 | 0.677605 | 0.034057 | 0.744680 | 0.032152 |
 
-### 11.3 Best settings
+### 16.3 Best settings
 
-#### Best by AUC
-- **AAL, 10-fold, weighted**
-- Accuracy = **0.670335**
-- AUC = **0.760592**
+Best AUC:
 
-#### Best by Accuracy
-- **HarvardOxford, 10-fold, unweighted**
-- Accuracy = **0.692352**
-- AUC = **0.739556**
-
----
-
-## 12. Interpretation of Results
-
-### AAL
-- Weighted templates helped AAL consistently
-- Best AAL result came from **10-fold weighted**
-- AAL achieved the **best AUC overall**
-
-### HarvardOxford
-- HarvardOxford unweighted performed better in accuracy
-- Weighted templates did **not** give a clear consistent benefit
-- HarvardOxford produced the **best accuracy overall**
-
-### 5-fold vs 10-fold
-- 10-fold generally improved or matched 5-fold performance
-- 10-fold is the stronger evaluation setting in this project
-
----
-
-## 13. Output Locations
-
-### Checkpoints
 ```text
-outputs/checkpoints/fgdn/...
-outputs/checkpoints/fgdn_weighted/...
+AAL 10-fold Weighted FGDN
+Accuracy = 0.670335
+AUC      = 0.760592
 ```
 
-### Fold evaluation tables
-```text
-outputs/tables/fgdn/...
-outputs/tables/fgdn_weighted/...
-```
+Best accuracy:
 
-### Training logs
 ```text
-data/processed/logs/fgdn/...
-data/processed/logs/fgdn_weighted/...
-```
-
-### PyG datasets
-```text
-data/processed/pyg_datasets/<atlas>/tangent/<n_folds>_fold/fold_<k>/
+HarvardOxford 10-fold Unweighted FGDN
+Accuracy = 0.692352
+AUC      = 0.739556
 ```
 
 ---
 
-## 14. What is Not Included in Git
+## 17. Result Interpretation
 
-This repository should **not** include:
-- raw ABIDE dataset files
-- ROI time-series files
-- large generated arrays
-- `.pt` PyG datasets
-- large checkpoint files
+From the completed runs:
+
+- Weighted templates improved AUC for AAL.
+- HarvardOxford unweighted gave the best accuracy.
+- AAL 10-fold weighted FGDN gave the best AUC overall.
+- HarvardOxford 10-fold unweighted FGDN gave the best accuracy overall.
+- 10-fold CV generally gave stronger or more stable results than 5-fold CV.
+- Atlas choice clearly affected performance.
+
+---
+
+## 18. Ablation Study Extension
+
+The next goal is to add ablation studies while keeping the current baseline files and results unchanged.
+
+The ablation results should be stored separately:
+
+```text
+outputs/ablations/
+```
+
+Recommended structure:
+
+```text
+outputs/ablations/
+├── configs/
+├── AAL/
+│   ├── knn/
+│   ├── cheb_k/
+│   ├── hidden_channels/
+│   ├── dropout/
+│   ├── learning_rate/
+│   ├── weight_decay/
+│   ├── batch_size/
+│   └── weighted_vs_unweighted/
+├── HarvardOxford/
+│   ├── knn/
+│   ├── cheb_k/
+│   ├── hidden_channels/
+│   ├── dropout/
+│   ├── learning_rate/
+│   ├── weight_decay/
+│   ├── batch_size/
+│   └── weighted_vs_unweighted/
+└── summaries/
+    ├── ablation_results.csv
+    ├── ablation_results.md
+    ├── ablation_auc_plot.png
+    └── ablation_accuracy_plot.png
+```
+
+### Planned ablations
+
+| Ablation | Values | Purpose |
+|---|---|---|
+| KNN neighbours | 5, 10, 20, 30, 40 | Test graph sparsity/density |
+| Chebyshev order | 1, 2, 3, 4, 5 | Test graph receptive field |
+| Hidden channels | 16, 32, 64, 128 | Test model capacity |
+| Dropout | 0.0, 0.1, 0.3, 0.5 | Test regularization |
+| Learning rate | 1e-5, 5e-5, 1e-4, 5e-4 | Test optimizer stability |
+| Weight decay | 0, 1e-5, 5e-4, 1e-3 | Test L2 regularization |
+| Batch size | 8, 16, 32 | Test training stability |
+| Template type | binary, weighted | Test edge-weight usefulness |
+| Atlas | AAL, HarvardOxford | Test atlas sensitivity |
+| Connectivity type | tangent, correlation | Test tangent vs simpler FC, only if safely supported |
+
+### Practical ablation strategy
+
+To avoid running too many expensive experiments at once:
+
+1. Start with AAL 5-fold fold 1 only.
+2. Run quick single-fold ablations for the main parameters.
+3. Select promising settings.
+4. Run full 5-fold CV for the promising settings.
+5. Run 10-fold CV only for the strongest final candidates.
+
+This keeps the ablation process manageable.
+
+---
+
+## 19. Suggested Future Work
+
+The main future direction is dynamic functional connectivity.
+
+Instead of one static connectivity matrix per subject, the time-series can be divided into temporal windows, producing a sequence of connectivity matrices. A future model can combine graph convolution with temporal modelling to learn how functional connectivity changes over time.
+
+Other possible extensions:
+
+- MODL_128 integration
+- Dynamic FC
+- Site-aware evaluation
+- Stronger regularization
+- Better hyperparameter tuning
+- Atlas-coordinate-based brain visualization
+
+---
+
+## 20. What Should Not Be Committed
+
+This repository should not include large generated files such as:
+
+- raw ABIDE data
+- downloaded ROI time-series files
+- large `.npy` arrays
+- PyTorch Geometric `.pt` datasets
+- checkpoint files
+- large logs
 
 These should be generated locally.
 
 Recommended to keep in Git:
+
 - source code
-- lightweight summaries
-- markdown / docs
-- small logs if needed
+- README
+- lightweight summary tables
+- report and presentation source files
+- small figures used in report/presentation
+- configuration files for reproducible experiments
 
 ---
 
-## 15. Clean Rebuild Order
+## 21. Final Rebuild Order
 
-If rebuilding from scratch after cloning and downloading data, use this order:
+If I clone the project again and rebuild from scratch, the order is:
 
-1. `download_abide_data.py`
-2. `verify_abide.py`
-3. `build_connectivity.py`
-4. `create_cv_splits.py`
-5. `build_graph_templates.py`
-6. `build_pyg_datasets.py`
-7. `train_fgdn.py`
-8. `evaluate_fgdn.py`
-9. `summarize_fgdn_cv.py`
-10. `train_fgdn_weighted.py`
-11. `evaluate_fgdn_weighted.py`
-12. `summarize_fgdn_cv_weighted.py`
-
----
-
-## 16. Pending Work / Future Extensions
-
-1. Integrate **MODL_128**
-2. Run static FGDN on MODL_128
-3. Compare AAL vs HarvardOxford vs MODL
-4. Add final report tables and visualizations
-5. Extend to **dynamic FC**
-6. Explore whether paper-faithful loss/head changes improve performance further
+```text
+1. download_abide_data.py
+2. verify_abide.py
+3. build_connectivity.py
+4. create_cv_splits.py
+5. build_graph_templates.py
+6. build_pyg_datasets.py
+7. train_fgdn.py
+8. evaluate_fgdn.py
+9. summarize_fgdn_cv.py
+10. train_fgdn_weighted.py
+11. evaluate_fgdn_weighted.py
+12. summarize_fgdn_cv_weighted.py
+```
 
 ---
 
-## 17. Final Status
+## 22. Final Notes
 
-### Completed
-- Folder structure setup
-- Environment setup
-- ABIDE data download pipeline
-- Verification pipeline
-- Corrected tangent-safe preprocessing pipeline
-- CV split generation
-- Graph template generation
-- PyG dataset generation
-- FGDN model implementation
-- Weighted FGDN implementation
-- Unweighted experiments:
-  - AAL 5-fold
-  - AAL 10-fold
-  - HarvardOxford 5-fold
-  - HarvardOxford 10-fold
-- Weighted experiments:
-  - AAL 5-fold
-  - AAL 10-fold
-  - HarvardOxford 5-fold
-  - HarvardOxford 10-fold
-- Result summarization and comparison
-
-### Pending
-- MODL_128
-- Dynamic FC
-- Final report writing / visualization polishing
-
----
+This repository now contains a working FGDN reproduction pipeline for ABIDE ASD classification using AAL and HarvardOxford ROI time-series. The completed baseline experiments are saved separately from the planned ablation extension. The next major step is to add a configuration-driven ablation runner so that parameter studies can be run cleanly without disturbing the current baseline code or results.
