@@ -22,6 +22,8 @@ SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance"
 def parse_args():
     parser = argparse.ArgumentParser(description="Train FGDN on one atlas/fold.")
     parser.add_argument("--project-root", type=str, default="D:/FGDN_Project")
+    parser.add_argument("--output-root", type=str, default="outputs")
+    parser.add_argument("--log-root", type=str, default=None)
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
     parser.add_argument("--kind", type=str, choices=SUPPORTED_KINDS, default="tangent")
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
@@ -371,7 +373,7 @@ def main():
 
     checkpoint_dir = (
         project_root
-        / "outputs"
+        / args.output_root
         / "checkpoints"
         / "fgdn"
         / args.atlas
@@ -383,17 +385,28 @@ def main():
     best_ckpt_path = checkpoint_dir / "best_fgdn.pt"
     last_ckpt_path = checkpoint_dir / "last_fgdn.pt"
 
-    history_csv_path = (
-        project_root
-        / "data"
-        / "processed"
-        / "logs"
-        / "fgdn"
-        / args.atlas
-        / f"{args.num_folds}_fold"
-        / f"fold_{args.fold}"
-        / "training_history.csv"
-    )
+    if args.log_root is None:
+        history_csv_path = (
+            project_root
+            / "data"
+            / "processed"
+            / "logs"
+            / "fgdn"
+            / args.atlas
+            / f"{args.num_folds}_fold"
+            / f"fold_{args.fold}"
+            / "training_history.csv"
+        )
+    else:
+        history_csv_path = (
+            project_root
+            / args.log_root
+            / "fgdn"
+            / args.atlas
+            / f"{args.num_folds}_fold"
+            / f"fold_{args.fold}"
+            / "training_history.csv"
+        )
 
     history = []
     best_monitor_loss = float("inf")

@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--fold", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--output-root", type=str, default="outputs")
     parser.add_argument("--checkpoint-type", type=str, choices=["best", "last"], default="best")
     return parser.parse_args()
 
@@ -54,10 +55,10 @@ def load_fold_datasets(project_root: Path, atlas: str, kind: str, num_folds: int
     return outer_train_dataset, test_dataset
 
 
-def load_checkpoint(project_root: Path, atlas: str, num_folds: int, fold: int, checkpoint_type: str):
+def load_checkpoint(project_root: Path, output_root: str, atlas: str, num_folds: int, fold: int, checkpoint_type: str):
     ckpt_dir = (
         project_root
-        / "outputs"
+        / output_root
         / "checkpoints"
         / "fgdn"
         / atlas
@@ -221,6 +222,7 @@ def main():
 
     checkpoint, ckpt_path = load_checkpoint(
         project_root=project_root,
+        output_root=args.output_root,
         atlas=args.atlas,
         num_folds=args.num_folds,
         fold=args.fold,
@@ -249,7 +251,7 @@ def main():
 
     out_dir = (
         project_root
-        / "outputs"
+        / args.output_root
         / "tables"
         / "fgdn"
         / args.atlas

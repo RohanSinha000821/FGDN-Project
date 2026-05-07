@@ -1,0 +1,31 @@
+{
+  "project_root": "D:/FGDN_Project",
+  "device": "cuda",
+  "epochs": 100,
+  "patience": 20,
+  "checkpoint_type": "best",
+  "base": {
+    "atlas": "AAL",
+    "kind": "tangent",
+    "num_folds": 5,
+    "folds": [1],
+    "template_mode": "binary",
+    "template_k": 20,
+    "cheb_k": 3,
+    "hidden_channels": 64,
+    "dropout": 0.1,
+    "batch_size": 16,
+    "lr": 0.0001,
+    "weight_decay": 0.0005
+  },
+  "studies": [
+    {"name": "knn", "param": "template_k", "values": [5, 10, 20, 30, 40]},
+    {"name": "cheb_k", "param": "cheb_k", "values": [1, 2, 3, 4, 5]},
+    {"name": "dropout", "param": "dropout", "values": [0.0, 0.1, 0.3, 0.5]},
+    {"name": "hidden_channels", "param": "hidden_channels", "values": [16, 32, 64, 128]},
+    {"name": "lr", "param": "lr", "values": [0.00001, 0.00005, 0.0001, 0.0005]},
+    {"name": "weight_decay", "param": "weight_decay", "values": [0.0, 0.00001, 0.0005, 0.001]},
+    {"name": "batch_size", "param": "batch_size", "values": [8, 16, 32]},
+    {"name": "weighted_vs_unweighted", "param": "template_mode", "values": ["binary", "weighted"]}
+  ]
+}

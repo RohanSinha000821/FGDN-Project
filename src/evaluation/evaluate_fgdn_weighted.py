@@ -18,6 +18,7 @@ SUPPORTED_KINDS = ["tangent", "correlation", "partial correlation", "covariance"
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate weighted FGDN checkpoint on one fold.")
     parser.add_argument("--project-root", type=str, default="D:/FGDN_Project")
+    parser.add_argument("--output-root", type=str, default="outputs")
     parser.add_argument("--atlas", type=str, choices=["AAL", "HarvardOxford"], required=True)
     parser.add_argument("--kind", type=str, choices=SUPPORTED_KINDS, default="tangent")
     parser.add_argument("--num-folds", type=int, choices=[5, 10], required=True)
@@ -59,10 +60,10 @@ def load_fold_datasets(project_root: Path, atlas: str, kind: str, num_folds: int
     return outer_train_dataset, test_dataset
 
 
-def load_checkpoint(project_root: Path, atlas: str, num_folds: int, fold: int, checkpoint_type: str):
+def load_checkpoint(project_root: Path, output_root: str, atlas: str, num_folds: int, fold: int, checkpoint_type: str):
     ckpt_dir = (
         project_root
-        / "outputs"
+        / output_root
         / "checkpoints"
         / "fgdn_weighted"
         / atlas
@@ -250,6 +251,7 @@ def main():
 
     checkpoint, ckpt_path = load_checkpoint(
         project_root=project_root,
+        output_root=args.output_root,
         atlas=args.atlas,
         num_folds=args.num_folds,
         fold=args.fold,
@@ -287,7 +289,7 @@ def main():
 
     out_dir = (
         project_root
-        / "outputs"
+        / args.output_root
         / "tables"
         / "fgdn_weighted"
         / args.atlas
